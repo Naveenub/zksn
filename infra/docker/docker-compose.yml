@@ -1,0 +1,201 @@
+version: "3.9"
+
+# =============================================================================
+# ZKSN Development Network
+# =============================================================================
+# This compose file creates a local test network with:
+#   - 3 mix nodes (simulating Nym-style mixing)
+#   - 2 Yggdrasil mesh nodes
+#   - 1 i2pd instance for internal service testing
+#   - 1 Cashu mint for economic layer testing
+#
+# FOR DEVELOPMENT AND TESTING ONLY.
+# DO NOT use Docker for production node deployment.
+# Production nodes use the NixOS configuration in ../nixos/
+#
+# Usage:
+#   docker compose up
+#   docker compose down --volumes  # Clean up everything
+# =============================================================================
+
+networks:
+  zksn-mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Yggdrasil Seed Node
+  # The first node in the mesh. Others peer to this.
+  # ---------------------------------------------------------------------------
+  yggdrasil-seed:
+    image: ghcr.io/neilalexander/yggdrasil-go:latest
+    container_name: zksn-ygg-seed
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.10
+    volumes:
+      - ./config/yggdrasil-seed.conf:/etc/yggdrasil.conf:ro
+    ports:
+      - "9001:9001/tcp"
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    command: ["yggdrasil", "-useconffile", "/etc/yggdrasil.conf"]
+
+  # ---------------------------------------------------------------------------
+  # Yggdrasil Peer Node
+  # ---------------------------------------------------------------------------
+  yggdrasil-peer:
+    image: ghcr.io/neilalexander/yggdrasil-go:latest
+    container_name: zksn-ygg-peer
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.11
+    volumes:
+      - ./config/yggdrasil-peer.conf:/etc/yggdrasil.conf:ro
+    restart: unless-stopped
+    depends_on:
+      - yggdrasil-seed
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    command: ["yggdrasil", "-useconffile", "/etc/yggdrasil.conf"]
+
+  # ---------------------------------------------------------------------------
+  # i2pd — Anonymous Service Layer
+  # ---------------------------------------------------------------------------
+  i2pd:
+    image: purplei2p/i2pd:latest
+    container_name: zksn-i2pd
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.20
+    volumes:
+      - ./config/i2pd.conf:/etc/i2pd/i2pd.conf:ro
+      - ./config/tunnels.conf:/etc/i2pd/tunnels.conf:ro
+      - i2pd-data:/home/i2pd/data
+    ports:
+      - "7070:7070"   # i2pd web console (dev only)
+      - "4444:4444"   # HTTP proxy
+      - "4447:4447"   # SOCKS proxy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Mix Node 1
+  # Simulates a Nym-style mix node with configurable delay
+  # ---------------------------------------------------------------------------
+  mix-node-1:
+    build:
+      context: ../../
+      dockerfile: infra/docker/Dockerfile.mixnode
+    container_name: zksn-mix-1
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.30
+    environment:
+      - NODE_ID=mix-node-1
+      - POISSON_LAMBDA=100      # ms average delay
+      - COVER_TRAFFIC_RATE=10   # dummy packets per second
+    volumes:
+      - mix1-keys:/var/lib/zksn/keys
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Mix Node 2
+  # ---------------------------------------------------------------------------
+  mix-node-2:
+    build:
+      context: ../../
+      dockerfile: infra/docker/Dockerfile.mixnode
+    container_name: zksn-mix-2
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.31
+    environment:
+      - NODE_ID=mix-node-2
+      - POISSON_LAMBDA=150
+      - COVER_TRAFFIC_RATE=10
+    volumes:
+      - mix2-keys:/var/lib/zksn/keys
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Mix Node 3
+  # ---------------------------------------------------------------------------
+  mix-node-3:
+    build:
+      context: ../../
+      dockerfile: infra/docker/Dockerfile.mixnode
+    container_name: zksn-mix-3
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.32
+    environment:
+      - NODE_ID=mix-node-3
+      - POISSON_LAMBDA=80
+      - COVER_TRAFFIC_RATE=10
+    volumes:
+      - mix3-keys:/var/lib/zksn/keys
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Cashu Mint — Economic Layer
+  # Chaumian ecash mint for per-packet micropayments
+  # ---------------------------------------------------------------------------
+  cashu-mint:
+    image: python:3.11-slim
+    container_name: zksn-cashu-mint
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.40
+    ports:
+      - "3338:3338"   # Cashu mint API (dev only)
+    volumes:
+      - cashu-data:/var/lib/cashu
+      - ./config/cashu.env:/app/.env:ro
+    working_dir: /app
+    command: >
+      bash -c "pip install cashu --quiet &&
+               mint --host 0.0.0.0 --port 3338"
+    restart: unless-stopped
+    environment:
+      - MINT_PRIVATE_KEY=changeme_generate_real_key_for_production
+      - MINT_LIGHTNING_BACKEND=FakeWallet  # Use FakeWallet for dev; configure LN for prod
+
+  # ---------------------------------------------------------------------------
+  # ZKSN Test Client
+  # An interactive container for testing the network
+  # ---------------------------------------------------------------------------
+  client:
+    build:
+      context: ../../
+      dockerfile: infra/docker/Dockerfile.client
+    container_name: zksn-client
+    networks:
+      zksn-mesh:
+        ipv4_address: 172.30.0.50
+    volumes:
+      - ./client-keys:/var/lib/zksn/keys
+      - ../../:/workspace:ro
+    stdin_open: true
+    tty: true
+    depends_on:
+      - mix-node-1
+      - mix-node-2
+      - mix-node-3
+      - i2pd
+    command: ["bash"]
+
+volumes:
+  i2pd-data:
+  mix1-keys:
+  mix2-keys:
+  mix3-keys:
+  cashu-data:
