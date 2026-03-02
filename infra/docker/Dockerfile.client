@@ -1,0 +1,43 @@
+# ZKSN Client — Docker Image (Dev/Test)
+
+FROM rust:1.75-slim-bookworm AS builder
+
+WORKDIR /build
+
+COPY Cargo.toml Cargo.toml
+COPY node/Cargo.toml node/Cargo.toml
+COPY client/Cargo.toml client/Cargo.toml
+COPY crypto/Cargo.toml crypto/Cargo.toml
+COPY economic/Cargo.toml economic/Cargo.toml
+
+RUN mkdir -p node/src client/src client/cli crypto/src economic/src && \
+    echo "fn main() {}" > node/src/main.rs && \
+    echo "fn main() {}" > client/cli/main.rs && \
+    echo "" > client/src/lib.rs && \
+    echo "" > crypto/src/lib.rs && \
+    echo "" > economic/src/lib.rs
+
+RUN cargo build --release --package zksn-client 2>&1 || true
+
+COPY node/ node/
+COPY client/ client/
+COPY crypto/ crypto/
+COPY economic/ economic/
+
+RUN touch client/cli/main.rs client/src/lib.rs
+RUN cargo build --release --package zksn-client
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/zksn /usr/local/bin/zksn
+
+RUN useradd -r -s /bin/bash -m -d /home/zksn zksn
+USER zksn
+WORKDIR /home/zksn
+
+ENTRYPOINT ["zksn"]
+CMD ["--help"]

@@ -1,0 +1,66 @@
+# ZKSN Mix Node — Docker Image
+# ==============================
+# FOR DEVELOPMENT AND TESTING ONLY.
+# Production nodes use the NixOS configuration in infra/nixos/
+#
+# Multi-stage build for minimal final image size.
+
+# Stage 1: Build
+FROM rust:1.75-slim-bookworm AS builder
+
+WORKDIR /build
+
+# Cache dependencies separately from source
+COPY Cargo.toml Cargo.toml
+COPY node/Cargo.toml node/Cargo.toml
+COPY client/Cargo.toml client/Cargo.toml
+COPY crypto/Cargo.toml crypto/Cargo.toml
+COPY economic/Cargo.toml economic/Cargo.toml
+
+# Dummy source files to cache dependency compilation
+RUN mkdir -p node/src client/src client/cli crypto/src economic/src governance/src && \
+    echo "fn main() {}" > node/src/main.rs && \
+    echo "fn main() {}" > client/cli/main.rs && \
+    echo "" > client/src/lib.rs && \
+    echo "" > crypto/src/lib.rs && \
+    echo "" > economic/src/lib.rs
+
+RUN cargo build --release --package zksn-node 2>&1 || true
+
+# Copy real source
+COPY node/ node/
+COPY client/ client/
+COPY crypto/ crypto/
+COPY economic/ economic/
+
+# Touch to invalidate cargo's mtime cache
+RUN touch node/src/main.rs node/src/lib.rs
+
+RUN cargo build --release --package zksn-node
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      libssl3 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /build/target/release/zksn-node /usr/local/bin/zksn-node
+
+# Non-root user
+RUN useradd -r -s /bin/false -m -d /var/lib/zksn zksn
+RUN mkdir -p /var/lib/zksn/keys && chown -R zksn:zksn /var/lib/zksn
+
+USER zksn
+
+# Default config (override with volume mount)
+COPY node/node.toml.example /app/node.toml
+
+EXPOSE 9001
+
+ENTRYPOINT ["zksn-node"]
+CMD ["--config", "/app/node.toml"]

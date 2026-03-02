@@ -1,0 +1,42 @@
+[package]
+name = "zksn-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZKSN Mix Node — Sphinx packet mixing with Poisson delays and cover traffic"
+
+[[bin]]
+name = "zksn-node"
+path = "src/main.rs"
+
+[dependencies]
+zksn-crypto   = { path = "../crypto" }
+zksn-economic = { path = "../economic" }
+
+tokio         = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+bincode       = { workspace = true }
+bytes         = { workspace = true }
+futures       = { workspace = true }
+tracing       = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+rand          = { workspace = true }
+zeroize       = { workspace = true }
+
+# Config file parsing
+toml = "0.8"
+
+# Async networking
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Metrics
+prometheus = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+tokio-test = "0.4"

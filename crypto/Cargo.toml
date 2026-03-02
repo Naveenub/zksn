@@ -6,15 +6,19 @@ license.workspace = true
 description = "ZKSN cryptographic primitives: Sphinx packets, Noise handshakes, identity"
 
 [dependencies]
-ed25519-dalek = { workspace = true }
-x25519-dalek = { workspace = true }
-snow = { workspace = true }
-sha2 = { workspace = true }
-chacha20poly1305 = { workspace = true }
-rand = { workspace = true }
-rand_core = { workspace = true }
-zeroize = { workspace = true }
-serde = { workspace = true }
-bincode = { workspace = true }
-bytes = { workspace = true }
-thiserror = { workspace = true }
+ed25519-dalek     = { workspace = true }
+x25519-dalek      = { workspace = true }
+snow              = { workspace = true }
+sha2              = { workspace = true }
+chacha20poly1305  = { workspace = true }
+rand              = { workspace = true }
+rand_core         = { workspace = true }
+zeroize           = { workspace = true }
+serde             = { workspace = true }
+bincode           = { workspace = true }
+bytes             = { workspace = true }
+thiserror         = { workspace = true }
+hex               = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
