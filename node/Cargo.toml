@@ -1,5 +1,5 @@
 [package]
-name = "zksn-node"
+name        = "zksn-node"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,18 +13,22 @@ path = "src/main.rs"
 zksn-crypto   = { path = "../crypto" }
 zksn-economic = { path = "../economic" }
 
-tokio         = { workspace = true }
-serde         = { workspace = true }
-serde_json    = { workspace = true }
-bincode       = { workspace = true }
-bytes         = { workspace = true }
-futures       = { workspace = true }
-tracing       = { workspace = true }
+tokio              = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+bincode            = { workspace = true }
+bytes              = { workspace = true }
+futures            = { workspace = true }
+tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
-thiserror     = { workspace = true }
-anyhow        = { workspace = true }
-rand          = { workspace = true }
-zeroize       = { workspace = true }
+thiserror          = { workspace = true }
+anyhow             = { workspace = true }
+rand               = { workspace = true }
+zeroize            = { workspace = true }
+hex                = { workspace = true }
+
+# Correct probability distributions (rand::distributions::Exp removed in rand 0.8)
+rand_distr = "0.4"
 
 # Config file parsing
 toml = "0.8"
@@ -40,3 +44,4 @@ prometheus = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile   = "3"

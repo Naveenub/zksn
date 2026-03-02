@@ -2,36 +2,24 @@
 //!
 //! Continuously emits cover traffic packets indistinguishable from real traffic.
 //!
-//! ## Two Types of Cover Traffic
-//!
-//! ### DROP Packets
-//! Sent to a random node in the network. The receiving node processes and
-//! discards them (they decode to a "DROP" instruction). Neither the sender
-//! nor any observer can distinguish a DROP from a real message.
-//!
-//! ### LOOP Packets
-//! Sent through the network and routed back to the sender. The sender can
-//! verify these arrive back — if they stop arriving, the sender knows the
-//! path is broken. Also indistinguishable from real traffic to observers.
-//!
-//! ## Rate
-//! Cover traffic is emitted at a configurable rate (packets per second).
-//! The rate should be tuned based on expected real traffic volume.
-//! A good starting point: match the expected real traffic rate.
+//! **DROP** packets are sent to a random node and silently discarded there.
+//! **LOOP** packets route back to the sender to verify path liveness.
+//! Both are cryptographically indistinguishable from real Sphinx packets.
 
 use anyhow::Result;
-use rand::{thread_rng, Rng};
+use rand::{Rng, RngCore};          // Rng for gen::<f32>(), RngCore for fill_bytes()
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::config::MixingConfig;
-use zksn_crypto::sphinx::{generate_drop_packet, generate_loop_packet, NodeIdentity, SphinxPacket};
+use zksn_crypto::sphinx::{
+    generate_drop_packet, generate_loop_packet, NodeIdentity, SphinxPacket,
+};
 
-/// Generates and emits cover traffic on a fixed schedule.
 pub struct CoverTrafficGenerator {
     config: MixingConfig,
-    tx: mpsc::Sender<SphinxPacket>,
+    tx:     mpsc::Sender<SphinxPacket>,
 }
 
 impl CoverTrafficGenerator {
@@ -39,64 +27,96 @@ impl CoverTrafficGenerator {
         Self { config, tx }
     }
 
-    /// Run the cover traffic generator.
-    ///
-    /// Emits one cover packet per tick. The tick rate is derived from
-    /// `cover_traffic_rate` (packets per second).
+    /// Run until the channel closes. Returns immediately if rate == 0.
     pub async fn run(&mut self) -> Result<()> {
-        let tick_ms = 1000 / self.config.cover_traffic_rate.max(1) as u64;
-        let mut ticker = interval(Duration::from_millis(tick_ms));
+        if self.config.cover_traffic_rate == 0 {
+            return Ok(());
+        }
 
-        let mut rng = thread_rng();
+        let tick_ms = 1000u64 / self.config.cover_traffic_rate as u64;
+        let mut ticker = interval(Duration::from_millis(tick_ms));
+        let mut rng = rand::thread_rng();
 
         loop {
             ticker.tick().await;
 
-            // Decide: LOOP (verify liveness) or DROP (pure cover)
             let use_loop = rng.gen::<f32>() < self.config.loop_cover_fraction;
 
             let packet = if use_loop {
-                let route = self.build_loop_route();
-                generate_loop_packet(&route, &mut rng)
+                generate_loop_packet(&self.build_loop_route(), &mut rng)
             } else {
-                let route = self.build_drop_route();
-                generate_drop_packet(&route, &mut rng)
+                generate_drop_packet(&self.build_drop_route(), &mut rng)
             };
 
             match packet {
                 Ok(p) => {
                     trace!("Emitting {} cover packet", if use_loop { "LOOP" } else { "DROP" });
-                    // Non-blocking: if the mixer is full, drop the cover packet
-                    // (real packets have higher priority)
-                    let _ = self.tx.try_send(p);
+                    // Non-blocking: cover packets are lower priority than real packets
+                    if self.tx.try_send(p).is_err() {
+                        trace!("Cover packet dropped — mixer queue full");
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to generate cover packet: {e}");
-                }
+                Err(e) => warn!("Failed to generate cover packet: {e}"),
             }
         }
     }
 
-    /// Build a random route for a DROP packet.
-    /// In production, this samples from the live network topology.
     fn build_drop_route(&self) -> Vec<NodeIdentity> {
-        // TODO: sample from live node registry / DHT
-        // For now: placeholder with 3 hops
         (0..3).map(|_| random_node_identity()).collect()
     }
 
-    /// Build a route that loops back to this node.
     fn build_loop_route(&self) -> Vec<NodeIdentity> {
-        // TODO: build a real loop route through the mix network
-        // that ends at our own node identity
         (0..3).map(|_| random_node_identity()).collect()
     }
 }
 
-/// Generate a random NodeIdentity for testing/placeholder purposes.
-/// In production, nodes are sampled from the live network registry.
 fn random_node_identity() -> NodeIdentity {
     let mut key = [0u8; 32];
-    rand::thread_rng().fill(&mut key);
+    rand::thread_rng().fill_bytes(&mut key);  // RngCore::fill_bytes — always correct
     NodeIdentity { public_key: key }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::MixingConfig;
+
+    #[tokio::test]
+    async fn test_cover_generator_emits_packets() {
+        let config = MixingConfig {
+            poisson_lambda_ms:   200,
+            cover_traffic_rate:  100,  // fast for test
+            max_queue_depth:     64,
+            loop_cover_fraction: 0.5,
+        };
+        let (tx, mut rx) = mpsc::channel::<SphinxPacket>(64);
+        let mut gen = CoverTrafficGenerator::new(config, tx);
+
+        tokio::spawn(async move { let _ = gen.run().await; });
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(300),
+            rx.recv(),
+        ).await;
+        assert!(result.is_ok(), "Should receive at least one cover packet within 300ms");
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_disabled_at_zero_rate() {
+        let config = MixingConfig {
+            poisson_lambda_ms:   200,
+            cover_traffic_rate:  0,   // disabled
+            max_queue_depth:     64,
+            loop_cover_fraction: 0.5,
+        };
+        let (tx, mut rx) = mpsc::channel::<SphinxPacket>(64);
+        let mut gen = CoverTrafficGenerator::new(config, tx);
+
+        let handle = tokio::spawn(async move { gen.run().await });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "No packets expected when rate = 0");
+        assert!(handle.is_finished(), "Generator should exit immediately when rate = 0");
+    }
 }

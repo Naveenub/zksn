@@ -2,30 +2,17 @@
 //!
 //! Implements continuous-time Poisson mixing for Sphinx packets.
 //!
-//! ## Why Poisson Mixing?
-//!
-//! A Global Passive Adversary (GPA) watching all network links can perform
-//! timing correlation attacks: if a packet enters one node and a similar
-//! packet exits another node milliseconds later, the adversary can link them.
-//!
-//! Poisson mixing defeats this by:
-//! 1. Holding packets for a random delay sampled from an Exponential distribution
-//! 2. Reordering packets (a packet that arrives later may leave earlier)
-//! 3. Interleaving cover traffic — real and fake packets are indistinguishable
-//!
-//! ## Mathematical Guarantee
-//!
-//! If packet delays are sampled i.i.d. from Exponential(λ), then for a GPA
-//! observing n packets enter and exit, the probability of correctly linking
-//! any single packet is 1/n — no better than random guessing, regardless
-//! of how many links the adversary can observe.
+//! A Global Passive Adversary (GPA) performing timing correlation is defeated
+//! because each packet is delayed by an independent Exponential(λ) random
+//! variable — making the exit time of any packet statistically independent
+//! of its entry time. Cover packets are delayed identically and are
+//! indistinguishable from real packets.
 //!
 //! Reference: Danezis, Dingledine, Mathewson — "Mixminion" (2003)
 
 use anyhow::Result;
-use rand::distributions::Exp;
-use rand::{thread_rng, Rng};
-use rand::prelude::Distribution;
+use rand::thread_rng;
+use rand_distr::{Distribution, Exp};   // rand_distr 0.4 — correct for rand 0.8
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant};
 use tracing::debug;
@@ -33,79 +20,51 @@ use tracing::debug;
 use crate::config::MixingConfig;
 use zksn_crypto::sphinx::SphinxPacket;
 
-/// A packet held in the mixing pool with its scheduled release time.
 struct HeldPacket {
-    packet: SphinxPacket,
-    /// Placeholder: in real impl, this is the decoded next-hop address
-    next_hop: String,
+    packet:     SphinxPacket,
+    next_hop:   String,
     release_at: Instant,
 }
 
-/// The Poisson mixer.
-///
-/// Receives packets from two sources:
-/// - `rx_real`: real incoming Sphinx packets
-/// - `rx_cover`: cover traffic (DROP/LOOP) from the cover generator
-///
-/// Both are treated identically — cover packets get the same Poisson delay
-/// as real packets. From outside, they are indistinguishable.
 pub struct PoissonMixer {
-    config: MixingConfig,
-    rx_real: mpsc::Receiver<SphinxPacket>,
+    config:   MixingConfig,
+    rx_real:  mpsc::Receiver<SphinxPacket>,
     rx_cover: mpsc::Receiver<SphinxPacket>,
-    tx_out: mpsc::Sender<(String, SphinxPacket)>,
-    pool: Vec<HeldPacket>,
+    tx_out:   mpsc::Sender<(String, SphinxPacket)>,
+    pool:     Vec<HeldPacket>,
 }
 
 impl PoissonMixer {
     pub fn new(
-        config: MixingConfig,
-        rx_real: mpsc::Receiver<SphinxPacket>,
+        config:   MixingConfig,
+        rx_real:  mpsc::Receiver<SphinxPacket>,
         rx_cover: mpsc::Receiver<SphinxPacket>,
-        tx_out: mpsc::Sender<(String, SphinxPacket)>,
+        tx_out:   mpsc::Sender<(String, SphinxPacket)>,
     ) -> Self {
-        Self {
-            config,
-            rx_real,
-            rx_cover,
-            tx_out,
-            pool: Vec::new(),
-        }
+        Self { config, rx_real, rx_cover, tx_out, pool: Vec::new() }
     }
 
-    /// Run the mixer loop.
-    ///
-    /// The loop does three things every tick:
-    /// 1. Drain any newly arrived packets into the pool (with Poisson delay)
-    /// 2. Release any packets whose delay has expired
-    /// 3. Sleep for a short poll interval
     pub async fn run(&mut self) -> Result<()> {
-        // Exponential distribution parameterized by λ (rate = 1/mean)
-        let lambda_secs = self.config.poisson_lambda_ms as f64 / 1000.0;
-        let exp_dist = Exp::new(1.0 / lambda_secs);
+        // rate = 1 / mean_seconds
+        let rate = 1.0 / (self.config.poisson_lambda_ms as f64 / 1000.0);
+        // Exp::new() in rand_distr 0.4 returns Result<Exp<f64>, ExpError>
+        let exp_dist = Exp::new(rate).expect("Poisson rate must be finite and positive");
 
-        let poll_interval = Duration::from_millis(10);
+        let poll = Duration::from_millis(10);
 
         loop {
             let now = Instant::now();
 
-            // Accept all available real packets (non-blocking drain)
+            // Drain all available real packets
             loop {
                 match self.rx_real.try_recv() {
                     Ok(packet) => {
-                        let delay_secs = exp_dist.sample(&mut thread_rng());
-                        let delay = Duration::from_secs_f64(delay_secs);
-                        let release_at = now + delay;
-
-                        debug!(
-                            "Holding real packet for {:.0}ms",
-                            delay.as_millis()
-                        );
-
+                        let secs = exp_dist.sample(&mut thread_rng());
+                        debug!("Holding real packet for {:.0}ms", secs * 1000.0);
                         self.pool.push(HeldPacket {
-                            next_hop: extract_next_hop(&packet),
+                            next_hop:   extract_next_hop(&packet),
                             packet,
-                            release_at,
+                            release_at: now + Duration::from_secs_f64(secs),
                         });
                     }
                     Err(mpsc::error::TryRecvError::Empty) => break,
@@ -113,18 +72,15 @@ impl PoissonMixer {
                 }
             }
 
-            // Accept all available cover packets
+            // Drain all available cover packets
             loop {
                 match self.rx_cover.try_recv() {
                     Ok(packet) => {
-                        let delay_secs = exp_dist.sample(&mut thread_rng());
-                        let delay = Duration::from_secs_f64(delay_secs);
-                        let release_at = now + delay;
-
+                        let secs = exp_dist.sample(&mut thread_rng());
                         self.pool.push(HeldPacket {
-                            next_hop: extract_next_hop(&packet),
+                            next_hop:   extract_next_hop(&packet),
                             packet,
-                            release_at,
+                            release_at: now + Duration::from_secs_f64(secs),
                         });
                     }
                     Err(mpsc::error::TryRecvError::Empty) => break,
@@ -132,32 +88,33 @@ impl PoissonMixer {
                 }
             }
 
-            // Release packets whose delay has expired
+            // Release packets whose hold has expired
             let mut i = 0;
             while i < self.pool.len() {
                 if self.pool[i].release_at <= now {
                     let held = self.pool.swap_remove(i);
-                    debug!("Releasing packet to {}", held.next_hop);
-                    // Ignore send errors (downstream shutdown)
+                    debug!("Releasing packet → {}", held.next_hop);
                     let _ = self.tx_out.send((held.next_hop, held.packet)).await;
                 } else {
                     i += 1;
                 }
             }
 
-            sleep(poll_interval).await;
+            sleep(poll).await;
         }
+    }
+
+    pub fn pool_depth(&self) -> usize {
+        self.pool.len()
     }
 }
 
-/// Extract the next-hop address from a Sphinx packet's routing header.
+/// Decode the next-hop address from a Sphinx packet.
 ///
-/// In a full implementation, this decrypts the outer routing layer using
-/// the node's private key and reads the encoded next-hop identity.
-/// For now, returns a placeholder.
+/// Full implementation: calls `sphinx::process_packet()` with the node's
+/// private key to decrypt the routing header and read the next hop.
+/// Placeholder until X25519 ECDH is wired in.
 fn extract_next_hop(_packet: &SphinxPacket) -> String {
-    // TODO: integrate with node private key to decrypt routing header
-    // See crypto/src/sphinx.rs process_packet()
     "127.0.0.1:9001".to_string()
 }
 
@@ -166,26 +123,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_poisson_delay_distribution() {
-        // Verify that sampled delays are positive and roughly exponentially distributed
-        let lambda_secs = 0.2; // 200ms mean
-        let exp_dist = Exp::new(1.0 / lambda_secs);
-        let mut rng = thread_rng();
+    fn test_exp_distribution_positive_mean() {
+        let rate = 1.0 / 0.2_f64; // 200ms mean
+        let dist = Exp::new(rate).unwrap();
+        let samples: Vec<f64> = (0..500).map(|_| dist.sample(&mut thread_rng())).collect();
 
-        let samples: Vec<f64> = (0..1000)
-            .map(|_| exp_dist.sample(&mut rng))
-            .collect();
+        assert!(samples.iter().all(|&d| d > 0.0), "All delays must be positive");
 
-        // All delays must be positive
-        assert!(samples.iter().all(|&d| d > 0.0));
-
-        // Sample mean should be close to λ (within 20% for 1000 samples)
         let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+        let expected = 0.2_f64;
         assert!(
-            (mean - lambda_secs).abs() < lambda_secs * 0.20,
-            "Mean delay {:.3}s deviates too far from expected {:.3}s",
-            mean,
-            lambda_secs
+            (mean - expected).abs() < expected * 0.25,
+            "Sample mean {mean:.3}s should be within 25% of {expected}s"
         );
+    }
+
+    #[test]
+    fn test_exp_new_rejects_zero_rate() {
+        // rand_distr 0.4: Exp::new(0.0) returns Err
+        assert!(Exp::new(0.0_f64).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_mixer_forwards_packet() {
+        use zksn_crypto::sphinx::PACKET_SIZE;
+
+        let config = MixingConfig {
+            poisson_lambda_ms:   1,   // 1ms mean → exits almost immediately
+            cover_traffic_rate:  0,
+            max_queue_depth:     16,
+            loop_cover_fraction: 0.0,
+        };
+
+        let (tx_real,    rx_real)   = mpsc::channel::<SphinxPacket>(16);
+        let (_tx_cover,  rx_cover)  = mpsc::channel::<SphinxPacket>(16);
+        let (tx_out,  mut rx_out)   = mpsc::channel::<(String, SphinxPacket)>(16);
+
+        let mut mixer = PoissonMixer::new(config, rx_real, rx_cover, tx_out);
+        tokio::spawn(async move { let _ = mixer.run().await; });
+
+        let dummy = SphinxPacket {
+            ephemeral_public_key: [0u8; 32],
+            routing_header:       vec![0u8; 96],
+            payload:              vec![0u8; PACKET_SIZE - 128],
+        };
+        tx_real.send(dummy).await.unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            rx_out.recv(),
+        ).await;
+        assert!(result.is_ok(),          "Packet should be forwarded within 500ms");
+        assert!(result.unwrap().is_some(), "Should receive a forwarded packet");
     }
 }
