@@ -1,4 +1,3 @@
-use crate::config::ClientConfig;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use zksn_crypto::identity::ZksnIdentity;
