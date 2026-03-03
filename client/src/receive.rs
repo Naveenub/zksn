@@ -1,58 +1,38 @@
-//! # Message Receiving
-//!
-//! Listens for incoming Sphinx packets addressed to this client's identity.
-//! Decrypts and delivers them to the application layer.
-
 use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{info, warn};
 use zksn_crypto::identity::ZksnIdentity;
-
+use zksn_crypto::sphinx::{SphinxPacket, PACKET_SIZE};
 use crate::config::ClientConfig;
 
-/// Start listening for incoming messages.
-///
-/// Returns a channel receiver. Each item is a decrypted message payload.
 pub async fn start_receiver(
     identity: &ZksnIdentity,
-    config: &ClientConfig,
+    config:   &ClientConfig,
 ) -> Result<mpsc::Receiver<Vec<u8>>> {
-    // Listen on a local port for the final-hop delivery from the mix network
-    // In a real deployment this would be an I2P tunnel endpoint or
-    // a Nym SURB (Single-Use Reply Block) listener.
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let local_addr = listener.local_addr()?;
-    tracing::info!("Receiving on {local_addr}");
+    let listen_addr = config.entry_node.replace("9001", "9002");
+    let listener    = TcpListener::bind(&listen_addr).await?;
+    let (tx, rx)    = mpsc::channel::<Vec<u8>>(64);
+    let _fp         = identity.public().fingerprint();
 
-    let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
-
-    // Extract identity private key bytes for decryption
-    let secret_bytes = identity.to_secret_bytes();
+    info!("Listening for incoming messages on {listen_addr}");
 
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
-                Ok((mut stream, peer)) => {
-                    debug!("Delivery from {peer}");
-                    let tx2 = tx.clone();
-                    let key = secret_bytes;
-                    tokio::spawn(async move {
-                        use tokio::io::AsyncReadExt;
-                        use zksn_crypto::sphinx::PACKET_SIZE;
-
-                        let mut buf = vec![0u8; PACKET_SIZE];
-                        if stream.read_exact(&mut buf).await.is_ok() {
-                            // TODO: decrypt Sphinx packet final layer with private key
-                            // For now, strip the fixed header and emit the payload
-                            let payload = buf[64..].to_vec();
-                            let _ = tx2.send(payload).await;
+                Ok((mut stream, _)) => {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = vec![0u8; PACKET_SIZE];
+                    if stream.read_exact(&mut buf).await.is_ok() {
+                        if let Ok(pkt) = bincode::deserialize::<SphinxPacket>(&buf) {
+                            // TODO: decrypt final Sphinx layer with identity private key
+                            let _ = pkt;
+                            let payload = b"(decryption pending — see sphinx.rs)".to_vec();
+                            let _ = tx.send(payload).await;
                         }
-                    });
+                    }
                 }
-                Err(e) => {
-                    warn!("Receive error: {e}");
-                }
+                Err(e) => warn!("Receive error: {e}"),
             }
         }
     });
