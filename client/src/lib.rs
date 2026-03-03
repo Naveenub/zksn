@@ -1,6 +1,8 @@
 pub mod receive;
 pub mod route;
 pub mod send;
+pub mod identity;
+pub mod noise;
 
 mod config;
 pub use config::ClientConfig;
