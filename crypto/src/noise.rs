@@ -60,14 +60,12 @@ impl NoiseInitiator {
         Ok(Self { state })
     }
 
-    pub fn new_with_key(private_key: &[u8]) -> Result<Self> {
-        let state = Builder::new(NOISE_PARAMS.parse()?)
-            .local_private_key(private_key)
-            .build_initiator()
-            .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-        Ok(Self { state })
-    }
-
+pub fn new_with_key(private_key: &[u8]) -> Result<Self, NoiseError> {
+    let state = Builder::new(
+        NOISE_PARAMS.parse()
+            .map_err(|e: snow::Error| NoiseError::HandshakeFailed(e.to_string()))?,
+    )
+    
     /// Step 1: → e
     pub fn write_message1(&mut self) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; 65535];
