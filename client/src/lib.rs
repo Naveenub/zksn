@@ -1,13 +1,13 @@
-use anyhow::Result;
-use tokio::sync::mpsc;
-use zksn_crypto::identity::ZksnIdentity;
-
-pub use config::ClientConfig;
-
-mod config;
 pub mod receive;
 pub mod route;
 pub mod send;
+
+mod config;
+pub use config::ClientConfig;
+
+use anyhow::Result;
+use tokio::sync::mpsc;
+use zksn_crypto::identity::ZksnIdentity;
 
 pub struct ZksnClient {
     identity: ZksnIdentity,
