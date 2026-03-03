@@ -94,7 +94,7 @@ The network achieves this through five orthogonal, independently verifiable mech
                            │
 ┌──────────────────────────▼──────────────────────────┐
 │              Layer 1 — Anonymous Service Plane      │
-│  I2P / i2pd · .b32.i2p addressing                   │
+│  I2P / i2pd · .b32.i2p addressing                  │
 │  .zksn internal TLD · DHT petname resolution        │
 └──────────────────────────┬──────────────────────────┘
                            │
@@ -157,7 +157,6 @@ zksn/
 │       ├── sphinx.rs               # Sphinx packet build/unwrap · fixed 2048B · cover packets
 │       ├── noise.rs                # Noise_XX handshake · mutual auth · forward secrecy
 │       └── zkp.rs                  # Merkle membership tree · nullifiers · DAO credentials
-│
 ├── node/                           # Mix node binary (zksn-node)
 │   ├── src/
 │   │   ├── main.rs                 # CLI entry point (clap) · config load · tracing init
@@ -170,7 +169,6 @@ zksn/
 │   │   └── lib.rs                  # Module exports
 │   ├── node.toml.example           # Fully annotated config template
 │   └── README.md
-│
 ├── client/                         # Client library + CLI (zksn)
 │   ├── src/
 │   │   ├── lib.rs                  # ZksnClient API · send() · receive()
@@ -181,14 +179,12 @@ zksn/
 │   ├── cli/
 │   │   └── main.rs                 # identity · send · receive · wallet subcommands
 │   └── README.md
-│
 ├── economic/                       # Payment layer
 │   └── src/
 │       ├── cashu.rs                # Cashu NUT-00 tokens · blind signatures · batch redemption
 │       ├── monero.rs               # Monero RPC · stealth addresses · piconero conversion
 │       ├── token.rs                # PacketToken — Cashu token attached to Sphinx packets
 │       └── lib.rs
-│
 ├── governance/                     # DAO smart contracts (Foundry)
 │   ├── contracts/
 │   │   ├── ZKSNGovernance.sol      # Core DAO · ZK voting · time-lock · autonomous execution
@@ -200,7 +196,6 @@ zksn/
 │   │   └── ZKSNGovernance.t.sol    # 20 tests: voting · double-vote · quorum · time-lock
 │   ├── foundry.toml
 │   └── README.md
-│
 ├── infra/
 │   ├── nixos/
 │   │   ├── node.nix                # RAM-only NixOS · tmpfs root · Yggdrasil · dm-verity · LUKS2
@@ -215,17 +210,14 @@ zksn/
 │           ├── yggdrasil-seed.conf # Seed node · multicast discovery
 │           ├── yggdrasil-peer.conf # Peer node · connects to seed
 │           └── cashu.env           # Cashu mint env (FakeWallet for dev)
-│
 ├── scripts/
 │   ├── gen-identity.sh             # Ed25519 keypair generator · fingerprint · secure permissions
 │   └── bootstrap-seed.sh           # Seed node setup: Yggdrasil + i2pd + identity + Cashu mint
-│
 ├── docs/
 │   ├── ARCHITECTURE.md             # Full 5-layer technical blueprint
 │   ├── THREAT_MODEL.md             # 6 adversary classes with mitigations
 │   ├── LEGAL.md                    # Mere conduit · Bernstein · Tornado Cash analysis
 │   └── ROADMAP.md                  # 8-phase development plan
-│
 ├── .github/
 │   ├── workflows/
 │   │   └── ci.yml                  # Rust (clippy · test · audit) + Foundry (forge test)
@@ -233,7 +225,6 @@ zksn/
 │   │   ├── bug_report.md
 │   │   └── feature_request.md
 │   └── PULL_REQUEST_TEMPLATE.md    # Crypto review checklist
-│
 ├── Cargo.toml                      # Workspace (node · client · crypto · economic)
 ├── Cargo.lock
 ├── flake.nix                       # Nix dev shell: Rust 1.78 · Foundry · Yggdrasil · i2pd · just
