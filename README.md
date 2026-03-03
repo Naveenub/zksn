@@ -52,16 +52,16 @@ The network achieves this through five orthogonal, independently verifiable mech
 
 ## Core Principles
 
-| Principle              | Implementation                          | Guarantee                                            |
-| ---------------------- | --------------------------------------- | ---------------------------------------------------- |
-| Identity Nullification | Ed25519 keypair only                    | No email, username, phone, or IP ever stored         |
-| Metadata Erasure       | Sphinx + Poisson mixing + cover traffic | Sender, receiver, timing, and content all hidden     |
-| Transport Sovereignty  | Yggdrasil encrypted IPv6 mesh           | No IANA, no ASN, no routing authority                |
-| Anonymous Services     | I2P (i2pd) garlic routing               | Server IP never exposed to clients                   |
-| Economic Sovereignty   | Cashu (Chaumian ecash) + Monero (XMR)   | Unlinkable micropayments, private settlement         |
-| Node Amnesia           | NixOS tmpfs root, no persistent writes  | Hardware seizure yields zero data                    |
-| Trustless Governance   | ZK-SNARK on-chain voting                | Anonymous, non-coercible, fully autonomous execution |
-| Code as Speech         | MIT license, no foundation              | Cannot be seized; protected under *Bernstein v. DOJ* |
+| Principle | Implementation | Guarantee |
+|---|---|---|
+| Identity Nullification | Ed25519 keypair only | No email, username, phone, or IP ever stored |
+| Metadata Erasure | Sphinx + Poisson mixing + cover traffic | Sender, receiver, timing, and content all hidden |
+| Transport Sovereignty | Yggdrasil encrypted IPv6 mesh | No IANA, no ASN, no routing authority |
+| Anonymous Services | I2P (i2pd) garlic routing | Server IP never exposed to clients |
+| Economic Sovereignty | Cashu (Chaumian ecash) + Monero (XMR) | Unlinkable micropayments, private settlement |
+| Node Amnesia | NixOS tmpfs root, no persistent writes | Hardware seizure yields zero data |
+| Trustless Governance | ZK-SNARK on-chain voting | Anonymous, non-coercible, fully autonomous execution |
+| Code as Speech | MIT license, no foundation | Cannot be seized; protected under *Bernstein v. DOJ* |
 
 ---
 
@@ -249,27 +249,27 @@ zksn/
 
 ## Tech Stack
 
-| Component            | Technology                                        | Version              | Purpose                                    |
-| -------------------- | ------------------------------------------------- | -------------------- | --- -------------------------------------- |
-| Node implementation  | Rust                                              | 1.75+                | Mix node, client, crypto primitives   |
-| Async runtime        | Tokio                                             | 1.x                   | All async I/O                             |
-| Mesh transport       | [Yggdrasil](https://yggdrasil-network.github.io/) | latest                | Encrypted IPv6 mesh, address = key       |
-| Mesh transport (alt) | [CJDNS](https://github.com/cjdelisle/cjdns)       | latest                | Redundant overlay, different routing   |
-| Anonymous services   | [I2P (i2pd)](https://i2pd.website/)               | latest                | .b32.i2p service hosting             |
-| Packet format        | Sphinx                                            | custom                | Fixed-size onion packets             |
-| Node handshake       | [Noise Protocol](https://noiseprotocol.org/) `XX` | snow 0.9              | Mutual auth, forward secrecy             |
-| Signing              | Ed25519                                           | ed25519-dalek 2       | Node identity                             |
-| Key exchange         | X25519                                            | x25519-dalek 2        | Session ECDH                              |
-| Encryption           | ChaCha20-Poly1305                                 | chacha20poly1305 0.10 | Packet payload                            |
-| Hashing              | SHA-256 / SHA-512                                 | sha2 0.10             | Fingerprints, Merkle trees               |
-| Micropayments        | [Cashu](https://cashu.space/)                     | NUT-00                | Blind-signed per-packet ecash        |
-| Settlement           | [Monero (XMR)](https://getmonero.org/)            | RPC v2                | Private on-chain settlement          |
-| Governance           | Solidity 0.8.20                                   | Foundry               | ZK-SNARK anonymous voting DAO          |
-| ZK proofs            | Verifier interface                                | pluggable             | Circom / Noir / Halo2 compatible          |
-| Node OS              | [NixOS](https://nixos.org/)                       | 24.x                  | RAM-only, reproducible builds |
-| Dev environment      | Nix flakes + just                                 | —                     | Reproducible shell, 30+ shortcuts       |
-| Metrics              | Prometheus                                        | 0.13                  | Local-only, never transmitted         |
-| CI                   | GitHub Actions                                    | —                     | Rust + Foundry pipeline            |
+| Component | Technology | Version | Purpose |
+|---|---|---|---|
+| Node implementation | Rust | 1.75+ | Mix node, client, crypto primitives |
+| Async runtime | Tokio | 1.x | All async I/O |
+| Mesh transport | [Yggdrasil](https://yggdrasil-network.github.io/) | latest | Encrypted IPv6 mesh, address = key |
+| Mesh transport (alt) | [CJDNS](https://github.com/cjdelisle/cjdns) | latest | Redundant overlay, different routing |
+| Anonymous services | [I2P (i2pd)](https://i2pd.website/) | latest | .b32.i2p service hosting |
+| Packet format | Sphinx | custom | Fixed-size onion packets |
+| Node handshake | [Noise Protocol](https://noiseprotocol.org/) `XX` | snow 0.9 | Mutual auth, forward secrecy |
+| Signing | Ed25519 | ed25519-dalek 2 | Node identity |
+| Key exchange | X25519 | x25519-dalek 2 | Session ECDH |
+| Encryption | ChaCha20-Poly1305 | chacha20poly1305 0.10 | Packet payload |
+| Hashing | SHA-256 / SHA-512 | sha2 0.10 | Fingerprints, Merkle trees |
+| Micropayments | [Cashu](https://cashu.space/) | NUT-00 | Blind-signed per-packet ecash |
+| Settlement | [Monero (XMR)](https://getmonero.org/) | RPC v2 | Private on-chain settlement |
+| Governance | Solidity 0.8.20 | Foundry | ZK-SNARK anonymous voting DAO |
+| ZK proofs | Verifier interface | pluggable | Circom / Noir / Halo2 compatible |
+| Node OS | [NixOS](https://nixos.org/) | 24.x | RAM-only, reproducible builds |
+| Dev environment | Nix flakes + just | — | Reproducible shell, 30+ shortcuts |
+| Metrics | Prometheus | 0.13 | Local-only, never transmitted |
+| CI | GitHub Actions | — | Rust + Foundry pipeline |
 
 ---
 
