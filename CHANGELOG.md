@@ -1,30 +1,15 @@
 # Changelog
 
-All notable changes to ZKSN will be documented here.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-
----
-
-## [Unreleased]
+## [0.1.0-alpha] — 2024
 
 ### Added
-- Initial repository scaffold
-- `crypto` crate: Ed25519 identity, Noise_XX handshake, Sphinx packet format (partial), ZKP membership utilities
-- `node` crate: Poisson mixer, cover traffic generator, TCP listener, packet router, Prometheus metrics
-- `client` crate: Send/receive API, CLI (`zksn identity|send|receive|wallet`)
-- `economic` crate: Cashu ecash wallet, Monero RPC interface, per-packet token format
-- `governance/`: ZKSNGovernance Solidity contract with ZK-proof voting, MockVerifier, Foundry test suite
-- `infra/nixos/`: RAM-only NixOS node configuration with dm-verity and kernel hardening
-- `infra/docker/`: Multi-service dev compose environment (mix nodes, i2pd, Cashu mint, Yggdrasil)
-- `scripts/gen-identity.sh`: Ed25519 keypair generator
-- `scripts/bootstrap-seed.sh`: Automated seed node deployment
-- `flake.nix`: Reproducible Nix development shell
-- `Justfile`: Common developer commands
-- CI pipeline: build, test, clippy, fmt, cargo-audit, shellcheck
-- Full documentation: ARCHITECTURE.md, THREAT_MODEL.md, LEGAL.md, ROADMAP.md
-
-### Security
-- All private key types implement `ZeroizeOnDrop`
-- Packet size is fixed at 2048 bytes (prevents length-based analysis)
-- Node identity never written to disk in stateless mode
-- Noise_XX handshake provides forward secrecy + mutual authentication
+- `crypto`: Ed25519 identity, Sphinx packets, Noise_XX handshake, ZKP Merkle tree
+- `node`: Mix node with Poisson delay, cover traffic (DROP/LOOP), router, Prometheus metrics
+- `client`: Client library, CLI (identity/send/receive/wallet)
+- `economic`: Cashu NUT-00 wallet, Monero RPC stubs, PacketToken
+- `governance`: ZKSNGovernance.sol (ZK voting, time-lock, autonomous execution), 14+ Foundry tests
+- `infra/nixos`: RAM-only NixOS node config (tmpfs, dm-verity, LUKS2, Yggdrasil, i2pd)
+- `infra/docker`: 7-service devnet (3 mix nodes, 2 Yggdrasil, i2pd, Cashu mint)
+- `flake.nix`: Reproducible Nix dev shell (Rust 1.78, Foundry, just, Yggdrasil, i2pd)
+- `Justfile`: 26 developer commands
+- CI: GitHub Actions (Rust build/test/lint + Foundry forge test)
