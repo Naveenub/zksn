@@ -1,51 +1,13 @@
-# Rust build artifacts
-/target/
-**/*.rs.bk
-Cargo.lock  # Intentionally not committed for libraries; commit for binaries
-
-# Keys — NEVER commit private keys
+/target
+keys/
 *.key
 *.pem
-identity.key
-identity.pub
-identity.fingerprint
-keys/
-**/keys/
-
-# NixOS build results
+node.toml
 result
-result-*
-
-# Docker
-.docker/
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.eggs/
-dist/
-build/
+.direnv
 .env
-.venv
-venv/
-
-# Editor artifacts
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Logs
-*.log
-logs/
-
-# Node.js (for governance tooling)
 node_modules/
-
-# Temporary files
-*.tmp
-*.bak
+/governance/out
+/governance/cache
+/governance/lib
+*.log
