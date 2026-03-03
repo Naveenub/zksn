@@ -1,35 +1,19 @@
 ---
 name: Bug Report
-about: Report a bug or unexpected behavior
+about: Report a bug
 labels: bug
 ---
 
-## Description
+**Describe the bug**
 
-<!-- A clear and concise description of the bug. -->
+**Steps to reproduce**
 
-## Steps to Reproduce
+**Expected behavior**
 
-1. 
-2. 
-3. 
+**Environment**
+- OS:
+- Rust version (`rustc --version`):
+- ZKSN version/commit:
 
-## Expected Behavior
-
-<!-- What should happen? -->
-
-## Actual Behavior
-
-<!-- What actually happens? Include error messages/logs. -->
-
-## Environment
-
-- OS: 
-- Rust version (`rustc --version`): 
-- ZKSN version / commit hash: 
-- Are you running a node or the client? 
-
-## Security Note
-
-**If this is a security vulnerability, do NOT open a public issue.**
-Please follow the responsible disclosure process in [SECURITY.md](../../SECURITY.md).
+**Security note**
+If this is a security vulnerability, do NOT file a public issue. See SECURITY.md.
