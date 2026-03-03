@@ -1,44 +1,30 @@
-//! # Per-Packet Payment Token
-//!
-//! Defines how Cashu tokens are attached to Sphinx packets.
-//! Each Sphinx packet carries exactly one token payload alongside it.
-//!
-//! The token is validated by the mix node BEFORE processing the packet.
-//! Invalid or missing tokens cause the packet to be silently dropped —
-//! no error response is sent (to avoid oracle attacks).
-
 use serde::{Deserialize, Serialize};
 use crate::cashu::CashuToken;
 
-/// A payment token attached to a Sphinx packet.
-///
-/// Serialized and prepended to the Sphinx packet wire format.
-/// The mix node reads and validates this before touching the Sphinx header.
+/// A Cashu payment token attached to a Sphinx packet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacketToken {
-    /// The Cashu token (blind-signed, unlinkable)
     pub token: CashuToken,
-    /// Protocol version for forward compatibility
-    pub version: u8,
+    pub amount: u64,
 }
 
 impl PacketToken {
-    pub fn new(token: CashuToken) -> Self {
-        Self { token, version: 1 }
-    }
+    pub fn new(token: CashuToken, amount: u64) -> Self { Self { token, amount } }
+    pub fn to_bytes(&self) -> Vec<u8> { serde_json::to_vec(self).unwrap_or_default() }
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> { serde_json::from_slice(bytes).ok() }
+}
 
-    /// Serialize to bytes for wire transmission.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
-    }
-
-    /// Deserialize from wire bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        serde_json::from_slice(bytes).ok()
-    }
-
-    /// Total token value in this payment.
-    pub fn value(&self) -> u64 {
-        self.token.proofs.iter().map(|p| p.amount).sum()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cashu::{CashuToken, Proof};
+    #[test] fn test_packet_token_roundtrip() {
+        let token = CashuToken { mint: "http://mint.test".into(),
+            proofs: vec![Proof { amount: 10, id: "test_id".into(),
+                secret: "secret".into(), c: "sig".into() }] };
+        let pt = PacketToken::new(token, 10);
+        let bytes = pt.to_bytes();
+        let restored = PacketToken::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.amount, 10);
     }
 }
