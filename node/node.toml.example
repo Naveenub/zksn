@@ -1,59 +1,24 @@
 # ZKSN Mix Node Configuration
-# ============================
-# Copy this file to node.toml and customize for your deployment.
-# Sensitive values (private keys) are NEVER stored here.
+# Copy to node.toml and edit. Private keys are NEVER stored here.
 
 [network]
-# Listen address for incoming Sphinx packets.
-# In production: use your Yggdrasil IPv6 address.
-# Format: "[ipv6_addr]:port" or "0.0.0.0:port"
-listen_addr = "[::1]:9001"
-
-# Maximum concurrent peer connections
-max_peers = 64
-
-# Connection timeout in milliseconds
+listen_addr        = "[::1]:9001"
+max_peers          = 64
 connect_timeout_ms = 5000
-
-# Bootstrap peers (Yggdrasil addresses of known seed nodes)
-# Format: "[yggdrasil_ipv6]:port"
-bootstrap_peers = [
-  # "[200:abcd:1234:5678::1]:9001",
-]
+bootstrap_peers    = []
 
 [mixing]
-# Mean Poisson delay in milliseconds.
-# Higher = more anonymity, more latency.
-# Recommended range: 100–500ms interactive, 1000–5000ms async.
-poisson_lambda_ms = 200
-
-# Cover traffic rate in packets per second.
-# Should match or exceed expected real traffic rate.
-cover_traffic_rate = 5
-
-# Maximum packet queue depth (DoS protection)
-max_queue_depth = 10000
-
-# Fraction of cover traffic that is LOOP (vs DROP).
-# LOOP packets verify path liveness; DROP are pure cover.
+poisson_lambda_ms   = 200
+cover_traffic_rate  = 5
+max_queue_depth     = 10000
 loop_cover_fraction = 0.3
 
 [economic]
-# Cashu mint URL for token validation
-cashu_mint_url = "http://mint.zksn.internal:3338"
-
-# Minimum Cashu token value per packet
-min_token_value = 1
-
-# Monero RPC endpoint for settlement
-monero_rpc_url = "http://127.0.0.1:18082"
-
-# Batch size for token redemptions (larger = less linkable, more delay)
+cashu_mint_url        = "http://mint.zksn.internal:3338"
+min_token_value       = 1
+monero_rpc_url        = "http://127.0.0.1:18082"
 redemption_batch_size = 100
 
 [keys]
-# Path to the node's private key.
-# If persist_identity = false, a fresh key is generated on every boot.
-# Leave persist_identity = false for fully stateless (RAM-only) operation.
-key_store_path = "/var/lib/zksn/keys/identity.key"
+key_store_path   = "/var/lib/zksn/keys/identity.key"
 persist_identity = false

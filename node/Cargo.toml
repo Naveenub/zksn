@@ -26,21 +26,11 @@ anyhow             = { workspace = true }
 rand               = { workspace = true }
 zeroize            = { workspace = true }
 hex                = { workspace = true }
-
-# Correct probability distributions (rand::distributions::Exp removed in rand 0.8)
-rand_distr = "0.4"
-
-# Config file parsing
-toml = "0.8"
-
-# Async networking
-tokio-util = { version = "0.7", features = ["codec"] }
-
-# CLI argument parsing
-clap = { version = "4", features = ["derive"] }
-
-# Metrics
-prometheus = { version = "0.13", default-features = false }
+rand_distr         = "0.4"
+toml               = "0.8"
+tokio-util         = { version = "0.7", features = ["codec"] }
+clap               = { version = "4",   features = ["derive"] }
+prometheus         = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 tokio-test = "0.4"
