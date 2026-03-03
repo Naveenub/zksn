@@ -28,12 +28,16 @@ pub struct ZksnPublicKey {
 impl ZksnIdentity {
     /// Generate a fresh identity from OS entropy.
     pub fn generate() -> Self {
-        Self { signing_key: SigningKey::generate(&mut OsRng) }
+        Self {
+            signing_key: SigningKey::generate(&mut OsRng),
+        }
     }
 
     /// Restore from a 32-byte secret seed.
     pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
-        Self { signing_key: SigningKey::from_bytes(&bytes) }
+        Self {
+            signing_key: SigningKey::from_bytes(&bytes),
+        }
     }
 
     /// Export the 32-byte secret seed. Zeroize the returned bytes when done.
@@ -48,7 +52,9 @@ impl ZksnIdentity {
 
     /// Return the public half.
     pub fn public(&self) -> ZksnPublicKey {
-        ZksnPublicKey { verifying_key: self.signing_key.verifying_key() }
+        ZksnPublicKey {
+            verifying_key: self.signing_key.verifying_key(),
+        }
     }
 }
 
@@ -85,29 +91,34 @@ impl ZksnPublicKey {
 mod tests {
     use super::*;
 
-    #[test] fn test_generate_is_unique() {
+    #[test]
+    fn test_generate_is_unique() {
         let a = ZksnIdentity::generate();
         let b = ZksnIdentity::generate();
         assert_ne!(a.public().fingerprint(), b.public().fingerprint());
     }
-    #[test] fn test_sign_verify_roundtrip() {
+    #[test]
+    fn test_sign_verify_roundtrip() {
         let id = ZksnIdentity::generate();
         let msg = b"test message";
         let sig = id.sign(msg);
         assert!(id.public().verify(msg, &sig).is_ok());
     }
-    #[test] fn test_wrong_message_fails() {
+    #[test]
+    fn test_wrong_message_fails() {
         let id = ZksnIdentity::generate();
         let sig = id.sign(b"correct");
         assert!(id.public().verify(b"wrong", &sig).is_err());
     }
-    #[test] fn test_from_secret_bytes_roundtrip() {
+    #[test]
+    fn test_from_secret_bytes_roundtrip() {
         let id = ZksnIdentity::generate();
         let bytes = id.to_secret_bytes();
         let restored = ZksnIdentity::from_secret_bytes(bytes);
         assert_eq!(id.public().fingerprint(), restored.public().fingerprint());
     }
-    #[test] fn test_fingerprint_is_16_hex_chars() {
+    #[test]
+    fn test_fingerprint_is_16_hex_chars() {
         let id = ZksnIdentity::generate();
         assert_eq!(id.public().fingerprint().len(), 16);
     }

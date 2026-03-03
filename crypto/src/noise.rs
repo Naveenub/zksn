@@ -23,7 +23,9 @@ pub struct NoiseSession {
 impl NoiseSession {
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; plaintext.len() + 16];
-        let len = self.state.write_message(plaintext, &mut buf)
+        let len = self
+            .state
+            .write_message(plaintext, &mut buf)
             .map_err(|_| NoiseError::EncryptFailed)?;
         buf.truncate(len);
         Ok(buf)
@@ -31,7 +33,9 @@ impl NoiseSession {
 
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; ciphertext.len()];
-        let len = self.state.read_message(ciphertext, &mut buf)
+        let len = self
+            .state
+            .read_message(ciphertext, &mut buf)
             .map_err(|_| NoiseError::DecryptFailed)?;
         buf.truncate(len);
         Ok(buf)
@@ -46,8 +50,12 @@ pub struct NoiseInitiator {
 impl NoiseInitiator {
     pub fn new() -> Result<Self> {
         let state = Builder::new(NOISE_PARAMS.parse()?)
-            .generate_keypair()?.local_private_key(&Builder::new(NOISE_PARAMS.parse()?)
-            .generate_keypair()?.private)
+            .generate_keypair()?
+            .local_private_key(
+                &Builder::new(NOISE_PARAMS.parse()?)
+                    .generate_keypair()?
+                    .private,
+            )
             .build_initiator()?;
         Ok(Self { state })
     }
@@ -63,7 +71,9 @@ impl NoiseInitiator {
     /// Step 1: → e
     pub fn write_message1(&mut self) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; 65535];
-        let len = self.state.write_message(&[], &mut buf)
+        let len = self
+            .state
+            .write_message(&[], &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         buf.truncate(len);
         Ok(buf)
@@ -72,7 +82,8 @@ impl NoiseInitiator {
     /// Step 2: ← e, ee, s, es
     pub fn read_message2(&mut self, msg: &[u8]) -> Result<(), NoiseError> {
         let mut buf = vec![0u8; 65535];
-        self.state.read_message(msg, &mut buf)
+        self.state
+            .read_message(msg, &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
@@ -80,10 +91,14 @@ impl NoiseInitiator {
     /// Step 3: → s, se  →  complete handshake
     pub fn write_message3(mut self) -> Result<(Vec<u8>, NoiseSession), NoiseError> {
         let mut buf = vec![0u8; 65535];
-        let len = self.state.write_message(&[], &mut buf)
+        let len = self
+            .state
+            .write_message(&[], &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         buf.truncate(len);
-        let transport = self.state.into_transport_mode()
+        let transport = self
+            .state
+            .into_transport_mode()
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok((buf, NoiseSession { state: transport }))
     }
@@ -106,7 +121,8 @@ impl NoiseResponder {
     /// Step 1: ← e
     pub fn read_message1(&mut self, msg: &[u8]) -> Result<(), NoiseError> {
         let mut buf = vec![0u8; 65535];
-        self.state.read_message(msg, &mut buf)
+        self.state
+            .read_message(msg, &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
@@ -114,7 +130,9 @@ impl NoiseResponder {
     /// Step 2: → e, ee, s, es
     pub fn write_message2(&mut self) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; 65535];
-        let len = self.state.write_message(&[], &mut buf)
+        let len = self
+            .state
+            .write_message(&[], &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         buf.truncate(len);
         Ok(buf)
@@ -123,9 +141,12 @@ impl NoiseResponder {
     /// Step 3: ← s, se  →  complete handshake
     pub fn read_message3(mut self, msg: &[u8]) -> Result<NoiseSession, NoiseError> {
         let mut buf = vec![0u8; 65535];
-        self.state.read_message(msg, &mut buf)
+        self.state
+            .read_message(msg, &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-        let transport = self.state.into_transport_mode()
+        let transport = self
+            .state
+            .into_transport_mode()
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(NoiseSession { state: transport })
     }
@@ -152,7 +173,9 @@ pub fn handshake_in_memory(
 
 fn generate_keypair() -> Vec<u8> {
     Builder::new(NOISE_PARAMS.parse().unwrap())
-        .generate_keypair().unwrap().private
+        .generate_keypair()
+        .unwrap()
+        .private
 }
 
 #[cfg(test)]

@@ -17,14 +17,14 @@ pub enum ZkpError {
 #[derive(ZeroizeOnDrop)]
 pub struct MemberCredential {
     secret: [u8; 32],
-    nonce:  [u8; 32],
+    nonce: [u8; 32],
 }
 
 impl MemberCredential {
     pub fn generate() -> Self {
         use rand::RngCore;
         let mut secret = [0u8; 32];
-        let mut nonce  = [0u8; 32];
+        let mut nonce = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut secret);
         rand::thread_rng().fill_bytes(&mut nonce);
         Self { secret, nonce }
@@ -33,7 +33,10 @@ impl MemberCredential {
     pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
         let mut nonce = [0u8; 32];
         nonce[0] = 1;
-        let s = Self { secret: bytes, nonce };
+        let s = Self {
+            secret: bytes,
+            nonce,
+        };
         bytes.zeroize();
         s
     }
@@ -78,7 +81,8 @@ impl MerkleTree {
             if layer.len() % 2 == 1 {
                 layer.push(*layer.last().unwrap()); // duplicate last node
             }
-            layer = layer.chunks(2)
+            layer = layer
+                .chunks(2)
                 .map(|pair| hash_pair(&pair[0], &pair[1]))
                 .collect();
         }
@@ -89,7 +93,7 @@ impl MerkleTree {
     pub fn proof(&self, index: usize) -> Vec<[u8; 32]> {
         let mut proof = Vec::new();
         let mut layer = self.leaves.clone();
-        let mut idx   = index;
+        let mut idx = index;
 
         while layer.len() > 1 {
             if layer.len() % 2 == 1 {
@@ -99,7 +103,8 @@ impl MerkleTree {
             if sibling < layer.len() {
                 proof.push(layer[sibling]);
             }
-            layer = layer.chunks(2)
+            layer = layer
+                .chunks(2)
                 .map(|pair| hash_pair(&pair[0], &pair[1]))
                 .collect();
             idx /= 2;
@@ -110,7 +115,7 @@ impl MerkleTree {
     /// Verify a Merkle proof.
     pub fn verify(root: &[u8; 32], leaf: &[u8; 32], proof: &[[u8; 32]], index: usize) -> bool {
         let mut current = *leaf;
-        let mut idx     = index;
+        let mut idx = index;
 
         for sibling in proof {
             current = if idx % 2 == 0 {
@@ -143,16 +148,16 @@ mod tests {
 
     #[test]
     fn test_nullifier_unique_per_proposal() {
-        let c   = MemberCredential::generate();
-        let p1  = [1u8; 32];
-        let p2  = [2u8; 32];
+        let c = MemberCredential::generate();
+        let p1 = [1u8; 32];
+        let p2 = [2u8; 32];
         assert_ne!(c.nullifier(&p1), c.nullifier(&p2));
     }
 
     #[test]
     fn test_nullifier_same_proposal_same_result() {
-        let c  = MemberCredential::generate();
-        let p  = [7u8; 32];
+        let c = MemberCredential::generate();
+        let p = [7u8; 32];
         assert_eq!(c.nullifier(&p), c.nullifier(&p));
     }
 
@@ -166,8 +171,8 @@ mod tests {
     #[test]
     fn test_merkle_proof_verify() {
         let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| [i; 32]).collect();
-        let tree  = MerkleTree::new(leaves.clone());
-        let root  = tree.root();
+        let tree = MerkleTree::new(leaves.clone());
+        let root = tree.root();
 
         for i in 0..leaves.len() {
             let proof = tree.proof(i);
@@ -181,8 +186,8 @@ mod tests {
     #[test]
     fn test_merkle_wrong_leaf_fails() {
         let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| [i; 32]).collect();
-        let tree  = MerkleTree::new(leaves);
-        let root  = tree.root();
+        let tree = MerkleTree::new(leaves);
+        let root = tree.root();
         let proof = tree.proof(0);
         let wrong = [99u8; 32];
         assert!(!MerkleTree::verify(&root, &wrong, &proof, 0));

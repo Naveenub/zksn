@@ -1,7 +1,7 @@
+use crate::config::ClientConfig;
 use anyhow::Result;
 use tokio::sync::mpsc;
 use zksn_crypto::identity::ZksnIdentity;
-use crate::config::ClientConfig;
 
 pub use config::ClientConfig;
 
@@ -10,7 +10,10 @@ pub mod receive;
 pub mod route;
 pub mod send;
 
-pub struct ZksnClient { identity: ZksnIdentity, config: ClientConfig }
+pub struct ZksnClient {
+    identity: ZksnIdentity,
+    config: ClientConfig,
+}
 
 impl ZksnClient {
     pub async fn new(config: ClientConfig) -> Result<Self> {
@@ -25,7 +28,9 @@ impl ZksnClient {
         Ok(Self { identity, config })
     }
 
-    pub fn fingerprint(&self) -> String { self.identity.public().fingerprint() }
+    pub fn fingerprint(&self) -> String {
+        self.identity.public().fingerprint()
+    }
 
     pub async fn send(&self, recipient_hex: &str, payload: &[u8]) -> Result<()> {
         send::send_message(&self.identity, recipient_hex, payload, &self.config).await

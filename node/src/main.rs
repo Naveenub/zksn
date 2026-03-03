@@ -26,20 +26,26 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(format!("zksn_node={log_level},warn")))
+                .unwrap_or_else(|_| EnvFilter::new(format!("zksn_node={log_level},warn"))),
         )
-        .with_target(false).compact().init();
+        .with_target(false)
+        .compact()
+        .init();
 
     info!("╔══════════════════════════════════════╗");
     info!("║   ZKSN Mix Node — Starting Up        ║");
     info!("╚══════════════════════════════════════╝");
-    if cli.testnet { warn!("TESTNET mode — payments not enforced"); }
+    if cli.testnet {
+        warn!("TESTNET mode — payments not enforced");
+    }
 
     let mut config = NodeConfig::load(&cli.config).unwrap_or_else(|_| {
         info!("No config at '{}' — using defaults", cli.config);
         NodeConfig::default()
     });
-    if let Some(addr) = cli.listen { config.network.listen_addr = addr; }
+    if let Some(addr) = cli.listen {
+        config.network.listen_addr = addr;
+    }
     config.testnet = cli.testnet;
 
     info!("Node ID:    {}", config.identity.fingerprint());

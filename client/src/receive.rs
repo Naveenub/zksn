@@ -1,19 +1,19 @@
+use crate::config::ClientConfig;
 use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use zksn_crypto::identity::ZksnIdentity;
 use zksn_crypto::sphinx::{SphinxPacket, PACKET_SIZE};
-use crate::config::ClientConfig;
 
 pub async fn start_receiver(
     identity: &ZksnIdentity,
-    config:   &ClientConfig,
+    config: &ClientConfig,
 ) -> Result<mpsc::Receiver<Vec<u8>>> {
     let listen_addr = config.entry_node.replace("9001", "9002");
-    let listener    = TcpListener::bind(&listen_addr).await?;
-    let (tx, rx)    = mpsc::channel::<Vec<u8>>(64);
-    let _fp         = identity.public().fingerprint();
+    let listener = TcpListener::bind(&listen_addr).await?;
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
+    let _fp = identity.public().fingerprint();
 
     info!("Listening for incoming messages on {listen_addr}");
 
@@ -27,7 +27,7 @@ pub async fn start_receiver(
                         if let Ok(pkt) = bincode::deserialize::<SphinxPacket>(&buf) {
                             // TODO: decrypt final Sphinx layer with identity private key
                             let _ = pkt;
-                            let payload = b"(decryption pending — see sphinx.rs)".to_vec();
+                            let payload = b"(decryption pending -- see sphinx.rs)".to_vec();
                             let _ = tx.send(payload).await;
                         }
                     }
