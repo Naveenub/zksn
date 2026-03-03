@@ -1,5 +1,4 @@
 //! Noise_XX handshake — mutual authentication with forward secrecy.
-use anyhow::Result;
 use snow::{Builder, TransportState};
 use thiserror::Error;
 
@@ -48,24 +47,18 @@ pub struct NoiseInitiator {
 }
 
 impl NoiseInitiator {
-    pub fn new() -> Result<Self> {
-        let state = Builder::new(NOISE_PARAMS.parse()?)
-            .generate_keypair()?
-            .local_private_key(
-                &Builder::new(NOISE_PARAMS.parse()?)
-                    .generate_keypair()?
-                    .private,
-            )
-            .build_initiator()?;
+    pub fn new_with_key(private_key: &[u8]) -> Result<Self, NoiseError> {
+        let state = Builder::new(
+            NOISE_PARAMS
+                .parse()
+                .map_err(|e: snow::Error| NoiseError::HandshakeFailed(e.to_string()))?,
+        )
+        .local_private_key(private_key)
+        .build_initiator()
+        .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(Self { state })
     }
 
-pub fn new_with_key(private_key: &[u8]) -> Result<Self, NoiseError> {
-    let state = Builder::new(
-        NOISE_PARAMS.parse()
-            .map_err(|e: snow::Error| NoiseError::HandshakeFailed(e.to_string()))?,
-    )
-    
     /// Step 1: → e
     pub fn write_message1(&mut self) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; 65535];
@@ -108,11 +101,15 @@ pub struct NoiseResponder {
 }
 
 impl NoiseResponder {
-    pub fn new_with_key(private_key: &[u8]) -> Result<Self> {
-        let state = Builder::new(NOISE_PARAMS.parse()?)
-            .local_private_key(private_key)
-            .build_responder()
-            .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
+    pub fn new_with_key(private_key: &[u8]) -> Result<Self, NoiseError> {
+        let state = Builder::new(
+            NOISE_PARAMS
+                .parse()
+                .map_err(|e: snow::Error| NoiseError::HandshakeFailed(e.to_string()))?,
+        )
+        .local_private_key(private_key)
+        .build_responder()
+        .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(Self { state })
     }
 
@@ -204,10 +201,10 @@ mod tests {
     fn test_noise_wrong_direction_fails() {
         let i_key = generate_keypair();
         let r_key = generate_keypair();
-        let (mut i_sess, mut r_sess) = handshake_in_memory(&i_key, &r_key).unwrap();
+        let (mut i_sess, _r_sess) = handshake_in_memory(&i_key, &r_key).unwrap();
 
         let ct = i_sess.encrypt(b"msg").unwrap();
-        // Trying to decrypt with the same session that encrypted should fail
+        // Same session that encrypted cannot also decrypt (send/recv keys are separate)
         assert!(i_sess.decrypt(&ct).is_err());
     }
 }
