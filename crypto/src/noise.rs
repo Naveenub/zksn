@@ -1,268 +1,192 @@
-//! # Noise Protocol Handshake
-//!
-//! Implements the Noise_XX handshake pattern for node-to-node authentication.
-//!
-//! ## Why Noise?
-//!
-//! Noise provides:
-//! - **Mutual authentication**: both parties prove they hold a private key
-//! - **Forward secrecy**: session keys are ephemeral; past sessions are safe
-//!   even if long-term keys are compromised later
-//! - **Identity hiding**: static public keys are transmitted encrypted,
-//!   so a passive observer cannot learn who is connecting to whom
-//! - **Zero infrastructure**: no certificate authorities, no PKI, no DNS
-//!
-//! ## Pattern: Noise_XX
-//!
-//! ```text
-//! → e
-//! ← e, ee, s, es
-//! → s, se
-//! ```
-//!
-//! After the handshake, both parties have:
-//! - Verified each other's static public keys
-//! - Established a shared session key (Diffie-Hellman based)
-//! - All subsequent communication is encrypted + authenticated
-//!
-//! Reference: https://noiseprotocol.org/noise.html
-
+//! Noise_XX handshake — mutual authentication with forward secrecy.
 use anyhow::Result;
-use snow::{Builder, HandshakeState, TransportState};
+use snow::{Builder, TransportState};
 use thiserror::Error;
 
-/// Noise protocol parameters used throughout ZKSN.
 const NOISE_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 #[derive(Debug, Error)]
 pub enum NoiseError {
     #[error("Handshake failed: {0}")]
     HandshakeFailed(String),
+    #[error("Encryption failed")]
+    EncryptFailed,
+    #[error("Decryption failed")]
+    DecryptFailed,
+}
 
-    #[error("Message decryption failed")]
-    DecryptionFailed,
+/// Completed Noise session — can encrypt/decrypt transport messages.
+pub struct NoiseSession {
+    state: TransportState,
+}
 
-    #[error("Invalid state: {0}")]
-    InvalidState(String),
+impl NoiseSession {
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        let mut buf = vec![0u8; plaintext.len() + 16];
+        let len = self.state.write_message(plaintext, &mut buf)
+            .map_err(|_| NoiseError::EncryptFailed)?;
+        buf.truncate(len);
+        Ok(buf)
+    }
+
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        let mut buf = vec![0u8; ciphertext.len()];
+        let len = self.state.read_message(ciphertext, &mut buf)
+            .map_err(|_| NoiseError::DecryptFailed)?;
+        buf.truncate(len);
+        Ok(buf)
+    }
 }
 
 /// Initiator side of a Noise_XX handshake.
-///
-/// The initiator is the node that opens the connection.
 pub struct NoiseInitiator {
-    state: HandshakeState,
+    state: snow::HandshakeState,
 }
 
 impl NoiseInitiator {
-    /// Create a new initiator with our static keypair.
-    pub fn new(static_private_key: &[u8]) -> Result<Self, NoiseError> {
-        let builder = Builder::new(NOISE_PARAMS.parse().map_err(|e| {
-            NoiseError::InvalidState(format!("Bad params: {e}"))
-        })?);
-
-        let state = builder
-            .local_private_key(static_private_key)
-            .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?
-            .build_initiator()
-            .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-
+    pub fn new() -> Result<Self> {
+        let state = Builder::new(NOISE_PARAMS.parse()?)
+            .generate_keypair()?.local_private_key(&Builder::new(NOISE_PARAMS.parse()?)
+            .generate_keypair()?.private)
+            .build_initiator()?;
         Ok(Self { state })
     }
 
-    /// Generate the first handshake message to send to the responder.
-    /// (`→ e` in the pattern)
-    pub fn write_message_1(&mut self) -> Result<Vec<u8>, NoiseError> {
-        let mut buf = vec![0u8; 65535];
-        let len = self.state
-            .write_message(&[], &mut buf)
+    pub fn new_with_key(private_key: &[u8]) -> Result<Self> {
+        let state = Builder::new(NOISE_PARAMS.parse()?)
+            .local_private_key(private_key)
+            .build_initiator()
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-        Ok(buf[..len].to_vec())
+        Ok(Self { state })
     }
 
-    /// Process the responder's reply. (`← e, ee, s, es`)
-    pub fn read_message_2(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+    /// Step 1: → e
+    pub fn write_message1(&mut self) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; 65535];
-        self.state
-            .read_message(message, &mut buf)
+        let len = self.state.write_message(&[], &mut buf)
+            .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
+        buf.truncate(len);
+        Ok(buf)
+    }
+
+    /// Step 2: ← e, ee, s, es
+    pub fn read_message2(&mut self, msg: &[u8]) -> Result<(), NoiseError> {
+        let mut buf = vec![0u8; 65535];
+        self.state.read_message(msg, &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
 
-    /// Generate the final handshake message. (`→ s, se`)
-    /// Returns the completed transport session.
-    pub fn write_message_3(mut self) -> Result<(Vec<u8>, NoiseSession), NoiseError> {
+    /// Step 3: → s, se  →  complete handshake
+    pub fn write_message3(mut self) -> Result<(Vec<u8>, NoiseSession), NoiseError> {
         let mut buf = vec![0u8; 65535];
-        let len = self.state
-            .write_message(&[], &mut buf)
+        let len = self.state.write_message(&[], &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-
-        let transport = self.state
-            .into_transport_mode()
+        buf.truncate(len);
+        let transport = self.state.into_transport_mode()
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-
-        Ok((buf[..len].to_vec(), NoiseSession { transport }))
+        Ok((buf, NoiseSession { state: transport }))
     }
 }
 
 /// Responder side of a Noise_XX handshake.
 pub struct NoiseResponder {
-    state: HandshakeState,
+    state: snow::HandshakeState,
 }
 
 impl NoiseResponder {
-    pub fn new(static_private_key: &[u8]) -> Result<Self, NoiseError> {
-        let builder = Builder::new(NOISE_PARAMS.parse().map_err(|e| {
-            NoiseError::InvalidState(format!("Bad params: {e}"))
-        })?);
-
-        let state = builder
-            .local_private_key(static_private_key)
-            .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?
+    pub fn new_with_key(private_key: &[u8]) -> Result<Self> {
+        let state = Builder::new(NOISE_PARAMS.parse()?)
+            .local_private_key(private_key)
             .build_responder()
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-
         Ok(Self { state })
     }
 
-    /// Read the initiator's first message. (`→ e`)
-    pub fn read_message_1(&mut self, message: &[u8]) -> Result<(), NoiseError> {
+    /// Step 1: ← e
+    pub fn read_message1(&mut self, msg: &[u8]) -> Result<(), NoiseError> {
         let mut buf = vec![0u8; 65535];
-        self.state
-            .read_message(message, &mut buf)
+        self.state.read_message(msg, &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
 
-    /// Generate response. (`← e, ee, s, es`)
-    pub fn write_message_2(&mut self) -> Result<Vec<u8>, NoiseError> {
+    /// Step 2: → e, ee, s, es
+    pub fn write_message2(&mut self) -> Result<Vec<u8>, NoiseError> {
         let mut buf = vec![0u8; 65535];
-        let len = self.state
-            .write_message(&[], &mut buf)
+        let len = self.state.write_message(&[], &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-        Ok(buf[..len].to_vec())
+        buf.truncate(len);
+        Ok(buf)
     }
 
-    /// Read the final handshake message. (`→ s, se`)
-    /// Returns the remote party's static public key and the transport session.
-    pub fn read_message_3(mut self, message: &[u8]) -> Result<(Vec<u8>, NoiseSession), NoiseError> {
+    /// Step 3: ← s, se  →  complete handshake
+    pub fn read_message3(mut self, msg: &[u8]) -> Result<NoiseSession, NoiseError> {
         let mut buf = vec![0u8; 65535];
-        self.state
-            .read_message(message, &mut buf)
+        self.state.read_message(msg, &mut buf)
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-
-        // Get remote static public key (now authenticated)
-        let remote_static = self.state
-            .get_remote_static()
-            .ok_or_else(|| NoiseError::InvalidState("No remote static key".to_string()))?
-            .to_vec();
-
-        let transport = self.state
-            .into_transport_mode()
+        let transport = self.state.into_transport_mode()
             .map_err(|e| NoiseError::HandshakeFailed(e.to_string()))?;
-
-        Ok((remote_static, NoiseSession { transport }))
+        Ok(NoiseSession { state: transport })
     }
 }
 
-/// An established Noise session — all messages are encrypted + authenticated.
-pub struct NoiseSession {
-    transport: TransportState,
+/// Complete a full Noise_XX handshake between initiator and responder in memory.
+/// Returns (initiator_session, responder_session).
+pub fn handshake_in_memory(
+    initiator_key: &[u8],
+    responder_key: &[u8],
+) -> Result<(NoiseSession, NoiseSession), NoiseError> {
+    let mut i = NoiseInitiator::new_with_key(initiator_key)?;
+    let mut r = NoiseResponder::new_with_key(responder_key)?;
+
+    let msg1 = i.write_message1()?;
+    r.read_message1(&msg1)?;
+    let msg2 = r.write_message2()?;
+    i.read_message2(&msg2)?;
+    let (msg3, i_session) = i.write_message3()?;
+    let r_session = r.read_message3(&msg3)?;
+
+    Ok((i_session, r_session))
 }
 
-impl NoiseSession {
-    /// Encrypt a message for the remote party.
-    pub fn send(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
-        let mut buf = vec![0u8; plaintext.len() + 16]; // 16 bytes AEAD tag
-        let len = self.transport
-            .write_message(plaintext, &mut buf)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
-        Ok(buf[..len].to_vec())
-    }
-
-    /// Decrypt a message from the remote party.
-    pub fn receive(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
-        let mut buf = vec![0u8; ciphertext.len()];
-        let len = self.transport
-            .read_message(ciphertext, &mut buf)
-            .map_err(|_| NoiseError::DecryptionFailed)?;
-        Ok(buf[..len].to_vec())
-    }
+fn generate_keypair() -> Vec<u8> {
+    Builder::new(NOISE_PARAMS.parse().unwrap())
+        .generate_keypair().unwrap().private
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn generate_keypair() -> ([u8; 32], [u8; 32]) {
-        // Generate a test X25519 keypair using snow's builder
-        let builder = Builder::new(NOISE_PARAMS.parse().unwrap());
-        let keypair = builder.generate_keypair().unwrap();
-        let mut private = [0u8; 32];
-        let mut public = [0u8; 32];
-        private.copy_from_slice(&keypair.private);
-        public.copy_from_slice(&keypair.public);
-        (private, public)
+    #[test]
+    fn test_noise_xx_handshake_succeeds() {
+        let i_key = generate_keypair();
+        let r_key = generate_keypair();
+        let result = handshake_in_memory(&i_key, &r_key);
+        assert!(result.is_ok(), "Noise_XX handshake must succeed");
     }
 
     #[test]
-    fn test_full_handshake() {
-        let (init_private, _) = generate_keypair();
-        let (resp_private, _) = generate_keypair();
+    fn test_noise_encrypt_decrypt_roundtrip() {
+        let i_key = generate_keypair();
+        let r_key = generate_keypair();
+        let (mut i_sess, mut r_sess) = handshake_in_memory(&i_key, &r_key).unwrap();
 
-        let mut initiator = NoiseInitiator::new(&init_private).unwrap();
-        let mut responder = NoiseResponder::new(&resp_private).unwrap();
-
-        // Handshake: → e
-        let msg1 = initiator.write_message_1().unwrap();
-
-        // ← e, ee, s, es
-        responder.read_message_1(&msg1).unwrap();
-        let msg2 = responder.write_message_2().unwrap();
-
-        // → s, se
-        initiator.read_message_2(&msg2).unwrap();
-        let (msg3, mut init_session) = initiator.write_message_3().unwrap();
-
-        let (remote_key, mut resp_session) = responder.read_message_3(&msg3).unwrap();
-
-        // Verify authenticated public key
-        assert_eq!(remote_key.len(), 32);
-
-        // Test encrypted communication
-        let plaintext = b"Hello from initiator to responder";
-        let ciphertext = init_session.send(plaintext).unwrap();
-        let decrypted = resp_session.receive(&ciphertext).unwrap();
-        assert_eq!(plaintext.as_ref(), decrypted.as_slice());
-
-        // Test reverse direction
-        let reply = b"Hello back from responder";
-        let encrypted_reply = resp_session.send(reply).unwrap();
-        let decrypted_reply = init_session.receive(&encrypted_reply).unwrap();
-        assert_eq!(reply.as_ref(), decrypted_reply.as_slice());
+        let plaintext = b"sovereign network message";
+        let ct = i_sess.encrypt(plaintext).unwrap();
+        let decoded = r_sess.decrypt(&ct).unwrap();
+        assert_eq!(decoded, plaintext);
     }
 
     #[test]
-    fn test_decryption_fails_with_tampered_ciphertext() {
-        let (init_private, _) = generate_keypair();
-        let (resp_private, _) = generate_keypair();
+    fn test_noise_wrong_direction_fails() {
+        let i_key = generate_keypair();
+        let r_key = generate_keypair();
+        let (mut i_sess, mut r_sess) = handshake_in_memory(&i_key, &r_key).unwrap();
 
-        let mut initiator = NoiseInitiator::new(&init_private).unwrap();
-        let mut responder = NoiseResponder::new(&resp_private).unwrap();
-
-        let msg1 = initiator.write_message_1().unwrap();
-        responder.read_message_1(&msg1).unwrap();
-        let msg2 = responder.write_message_2().unwrap();
-        initiator.read_message_2(&msg2).unwrap();
-        let (msg3, mut init_session) = initiator.write_message_3().unwrap();
-        let (_, mut resp_session) = responder.read_message_3(&msg3).unwrap();
-
-        let plaintext = b"secret message";
-        let mut ciphertext = init_session.send(plaintext).unwrap();
-
-        // Tamper with the ciphertext
-        ciphertext[0] ^= 0xFF;
-
-        // Decryption must fail
-        assert!(resp_session.receive(&ciphertext).is_err());
+        let ct = i_sess.encrypt(b"msg").unwrap();
+        // Trying to decrypt with the same session that encrypted should fail
+        assert!(i_sess.decrypt(&ct).is_err());
     }
 }

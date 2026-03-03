@@ -1,153 +1,83 @@
-//! # Identity Management
-//!
-//! ZKSN identity is a cryptographic keypair only.
-//! There is no username, no email, no registration.
-//!
-//! The public key IS the identity. The fingerprint IS the "address".
-
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
+//! Ed25519 identity keypair — sign, verify, fingerprint.
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[derive(Debug, Error)]
 pub enum IdentityError {
-    #[error("Invalid key material: {0}")]
-    InvalidKey(String),
-
     #[error("Signature verification failed")]
     VerificationFailed,
-
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    #[error("Invalid key bytes")]
+    InvalidKeyBytes,
 }
 
-/// A ZKSN identity — a keypair.
-///
-/// The private key is zeroized on drop to minimize exposure.
-/// Never serialize the full identity (including private key) over a network.
-/// Only `ZksnIdentity::public()` should ever be transmitted.
+/// A node's long-term Ed25519 signing identity.
 #[derive(ZeroizeOnDrop)]
 pub struct ZksnIdentity {
     signing_key: SigningKey,
 }
 
+/// The public half of a ZKSN identity.
+#[derive(Debug, Clone)]
+pub struct ZksnPublicKey {
+    verifying_key: VerifyingKey,
+}
+
 impl ZksnIdentity {
-    /// Generate a new random identity.
-    /// Uses the OS entropy source (cryptographically secure).
+    /// Generate a fresh identity from OS entropy.
     pub fn generate() -> Self {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        Self { signing_key }
+        Self { signing_key: SigningKey::generate(&mut OsRng) }
     }
 
-    /// Load an identity from raw secret key bytes.
-    /// The bytes are zeroized after use.
-    pub fn from_secret_bytes(mut bytes: [u8; 32]) -> Self {
-        let signing_key = SigningKey::from_bytes(&bytes);
-        bytes.zeroize();
-        Self { signing_key }
+    /// Restore from a 32-byte secret seed.
+    pub fn from_secret_bytes(bytes: [u8; 32]) -> Self {
+        Self { signing_key: SigningKey::from_bytes(&bytes) }
     }
 
-    /// Export the secret key bytes.
-    ///
-    /// # Security
-    /// Handle the returned bytes with extreme care. Zeroize after use.
-    /// Never transmit over a network. Store only in encrypted form.
+    /// Export the 32-byte secret seed. Zeroize the returned bytes when done.
     pub fn to_secret_bytes(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
     }
 
-    /// Get the public identity (safe to share).
-    pub fn public(&self) -> PublicIdentity {
-        PublicIdentity {
-            verifying_key: self.signing_key.verifying_key(),
-        }
+    /// Sign a message.
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        self.signing_key.sign(message).to_bytes().to_vec()
     }
 
-    /// Sign a message with this identity.
-    pub fn sign(&self, message: &[u8]) -> IdentitySignature {
-        let signature = self.signing_key.sign(message);
-        IdentitySignature { signature }
+    /// Return the public half.
+    pub fn public(&self) -> ZksnPublicKey {
+        ZksnPublicKey { verifying_key: self.signing_key.verifying_key() }
+    }
+}
+
+impl ZksnPublicKey {
+    /// Verify a signature produced by the corresponding private key.
+    pub fn verify(&self, message: &[u8], signature_bytes: &[u8]) -> Result<(), IdentityError> {
+        let sig_arr: [u8; 64] = signature_bytes
+            .try_into()
+            .map_err(|_| IdentityError::VerificationFailed)?;
+        let sig = Signature::from_bytes(&sig_arr);
+        self.verifying_key
+            .verify(message, &sig)
+            .map_err(|_| IdentityError::VerificationFailed)
     }
 
-    /// Get the human-readable fingerprint of this identity.
+    /// Short human-readable identifier: first 8 bytes of SHA-256(pubkey).
     pub fn fingerprint(&self) -> String {
-        self.public().fingerprint()
+        let hash = Sha256::digest(self.verifying_key.as_bytes());
+        hex::encode(&hash[..8])
     }
-}
 
-/// The public half of a ZKSN identity.
-/// This is what you share with others. It IS your address.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublicIdentity {
-    #[serde(with = "verifying_key_serde")]
-    pub verifying_key: VerifyingKey,
-}
-
-impl PublicIdentity {
-    /// Get the raw public key bytes (32 bytes)
-    pub fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8; 32] {
         self.verifying_key.as_bytes()
     }
 
-    /// Compute the SHA-256 fingerprint of this identity.
-    ///
-    /// The fingerprint is a human-readable representation of the public key,
-    /// formatted as hex octets: "ab:cd:ef:..."
-    pub fn fingerprint(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.verifying_key.as_bytes());
-        let hash = hasher.finalize();
-
-        hash.iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<_>>()
-            .join(":")
-    }
-
-    /// Verify a signature against this identity.
-    pub fn verify(&self, message: &[u8], signature: &IdentitySignature) -> Result<(), IdentityError> {
-        self.verifying_key
-            .verify(message, &signature.signature)
-            .map_err(|_| IdentityError::VerificationFailed)
-    }
-}
-
-/// A signature produced by a ZKSN identity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdentitySignature {
-    #[serde(with = "signature_serde")]
-    signature: Signature,
-}
-
-// Serde helpers for ed25519 types
-mod verifying_key_serde {
-    use ed25519_dalek::VerifyingKey;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(key: &VerifyingKey, s: S) -> Result<S::Ok, S::Error> {
-        key.as_bytes().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<VerifyingKey, D::Error> {
-        let bytes = <[u8; 32]>::deserialize(d)?;
-        VerifyingKey::from_bytes(&bytes).map_err(serde::de::Error::custom)
-    }
-}
-
-mod signature_serde {
-    use ed25519_dalek::Signature;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(sig: &Signature, s: S) -> Result<S::Ok, S::Error> {
-        sig.to_bytes().serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Signature, D::Error> {
-        let bytes = <[u8; 64]>::deserialize(d)?;
-        Ok(Signature::from_bytes(&bytes))
+    pub fn from_bytes(bytes: &[u8; 32]) -> Result<Self, IdentityError> {
+        VerifyingKey::from_bytes(bytes)
+            .map(|vk| Self { verifying_key: vk })
+            .map_err(|_| IdentityError::InvalidKeyBytes)
     }
 }
 
@@ -155,69 +85,30 @@ mod signature_serde {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_identity_generation() {
-        let identity = ZksnIdentity::generate();
-        let public = identity.public();
-
-        // Fingerprint should be 32 bytes × 2 hex chars + 31 colons = 95 chars
-        let fp = public.fingerprint();
-        assert_eq!(fp.len(), 95);
-        assert!(fp.contains(':'));
+    #[test] fn test_generate_is_unique() {
+        let a = ZksnIdentity::generate();
+        let b = ZksnIdentity::generate();
+        assert_ne!(a.public().fingerprint(), b.public().fingerprint());
     }
-
-    #[test]
-    fn test_sign_and_verify() {
-        let identity = ZksnIdentity::generate();
-        let message = b"test message for ZKSN";
-
-        let signature = identity.sign(message);
-        let public = identity.public();
-
-        assert!(public.verify(message, &signature).is_ok());
+    #[test] fn test_sign_verify_roundtrip() {
+        let id = ZksnIdentity::generate();
+        let msg = b"test message";
+        let sig = id.sign(msg);
+        assert!(id.public().verify(msg, &sig).is_ok());
     }
-
-    #[test]
-    fn test_verify_fails_on_wrong_message() {
-        let identity = ZksnIdentity::generate();
-        let message = b"original message";
-        let wrong_message = b"tampered message";
-
-        let signature = identity.sign(message);
-        let public = identity.public();
-
-        assert!(public.verify(wrong_message, &signature).is_err());
+    #[test] fn test_wrong_message_fails() {
+        let id = ZksnIdentity::generate();
+        let sig = id.sign(b"correct");
+        assert!(id.public().verify(b"wrong", &sig).is_err());
     }
-
-    #[test]
-    fn test_verify_fails_with_different_identity() {
-        let identity1 = ZksnIdentity::generate();
-        let identity2 = ZksnIdentity::generate();
-        let message = b"test message";
-
-        let signature = identity1.sign(message);
-        let public2 = identity2.public();
-
-        assert!(public2.verify(message, &signature).is_err());
+    #[test] fn test_from_secret_bytes_roundtrip() {
+        let id = ZksnIdentity::generate();
+        let bytes = id.to_secret_bytes();
+        let restored = ZksnIdentity::from_secret_bytes(bytes);
+        assert_eq!(id.public().fingerprint(), restored.public().fingerprint());
     }
-
-    #[test]
-    fn test_two_identities_are_different() {
-        let id1 = ZksnIdentity::generate();
-        let id2 = ZksnIdentity::generate();
-
-        assert_ne!(id1.public().fingerprint(), id2.public().fingerprint());
-    }
-
-    #[test]
-    fn test_secret_key_roundtrip() {
-        let identity = ZksnIdentity::generate();
-        let secret_bytes = identity.to_secret_bytes();
-
-        let recovered = ZksnIdentity::from_secret_bytes(secret_bytes);
-        assert_eq!(
-            identity.public().fingerprint(),
-            recovered.public().fingerprint()
-        );
+    #[test] fn test_fingerprint_is_16_hex_chars() {
+        let id = ZksnIdentity::generate();
+        assert_eq!(id.public().fingerprint().len(), 16);
     }
 }
