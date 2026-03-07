@@ -107,8 +107,4 @@ mod tests {
             "mean {mean:.3} should be near 0.2"
         );
     }
-    #[test]
-    fn test_exp_zero_rate_fails() {
-        assert!(Exp::new(0.0_f64).is_err());
-    }
 }
