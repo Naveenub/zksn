@@ -1,6 +1,7 @@
 use crate::config::MixingConfig;
 use anyhow::Result;
-use rand::{Rng, RngCore};
+use rand::rngs::StdRng;
+use rand::{Rng, RngCore, SeedableRng};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{trace, warn};
@@ -22,14 +23,15 @@ impl CoverTrafficGenerator {
         }
         let tick_ms = 1000u64 / self.config.cover_traffic_rate as u64;
         let mut ticker = interval(Duration::from_millis(tick_ms));
-        let mut rng = rand::thread_rng();
+        let mut rng = StdRng::from_entropy();
         loop {
             ticker.tick().await;
             let use_loop = rng.gen::<f32>() < self.config.loop_cover_fraction;
+            let route = self.build_route(&mut rng);
             let pkt = if use_loop {
-                generate_loop_packet(&self.build_route(), &mut rng)
+                generate_loop_packet(&route, &mut rng)
             } else {
-                generate_drop_packet(&self.build_route(), &mut rng)
+                generate_drop_packet(&route, &mut rng)
             };
             match pkt {
                 Ok(p) => {
@@ -41,11 +43,11 @@ impl CoverTrafficGenerator {
         }
     }
 
-    fn build_route(&self) -> Vec<NodeIdentity> {
+    fn build_route(&self, rng: &mut impl RngCore) -> Vec<NodeIdentity> {
         (0..3)
             .map(|_| {
                 let mut k = [0u8; 32];
-                rand::thread_rng().fill_bytes(&mut k);
+                rng.fill_bytes(&mut k);
                 NodeIdentity { public_key: k }
             })
             .collect()

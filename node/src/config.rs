@@ -147,6 +147,11 @@ impl Clone for IdentityHolder {
         }
     }
 }
+impl Default for IdentityHolder {
+    fn default() -> Self {
+        Self::generate()
+    }
+}
 
 #[cfg(test)]
 mod tests {
