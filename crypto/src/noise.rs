@@ -166,16 +166,16 @@ pub fn handshake_in_memory(
     Ok((i_session, r_session))
 }
 
-fn generate_keypair() -> Vec<u8> {
-    Builder::new(NOISE_PARAMS.parse().unwrap())
-        .generate_keypair()
-        .unwrap()
-        .private
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn generate_keypair() -> Vec<u8> {
+        Builder::new(NOISE_PARAMS.parse().unwrap())
+            .generate_keypair()
+            .unwrap()
+            .private
+    }
 
     #[test]
     fn test_noise_xx_handshake_succeeds() {
