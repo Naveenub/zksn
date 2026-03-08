@@ -13,10 +13,15 @@ struct HeldPacket {
     release_at: Instant,
 }
 
+/// Poisson-delay mixer.
+///
+/// Both real packets (`rx_real`) and cover packets (`rx_cover`) arrive as
+/// `(addr, packet)` pairs — the TCP address is already resolved by the caller
+/// (via `PeerTable::resolve`) before entering the mixer.
 pub struct PoissonMixer {
     config: MixingConfig,
-    rx_real: mpsc::Receiver<SphinxPacket>,
-    rx_cover: mpsc::Receiver<SphinxPacket>,
+    rx_real: mpsc::Receiver<(String, SphinxPacket)>,
+    rx_cover: mpsc::Receiver<(String, SphinxPacket)>,
     tx_out: mpsc::Sender<(String, SphinxPacket)>,
     pool: Vec<HeldPacket>,
 }
@@ -24,8 +29,8 @@ pub struct PoissonMixer {
 impl PoissonMixer {
     pub fn new(
         config: MixingConfig,
-        rx_real: mpsc::Receiver<SphinxPacket>,
-        rx_cover: mpsc::Receiver<SphinxPacket>,
+        rx_real: mpsc::Receiver<(String, SphinxPacket)>,
+        rx_cover: mpsc::Receiver<(String, SphinxPacket)>,
         tx_out: mpsc::Sender<(String, SphinxPacket)>,
     ) -> Self {
         Self {
@@ -45,11 +50,11 @@ impl PoissonMixer {
             let now = Instant::now();
             loop {
                 match self.rx_real.try_recv() {
-                    Ok(p) => {
+                    Ok((addr, p)) => {
                         let secs = exp_dist.sample(&mut thread_rng());
-                        debug!("Holding real packet {:.0}ms", secs * 1000.0);
+                        debug!("Holding real packet {:.0}ms -> {addr}", secs * 1000.0);
                         self.pool.push(HeldPacket {
-                            next_hop: extract_next_hop(&p),
+                            next_hop: addr,
                             packet: p,
                             release_at: now + Duration::from_secs_f64(secs),
                         });
@@ -60,10 +65,10 @@ impl PoissonMixer {
             }
             loop {
                 match self.rx_cover.try_recv() {
-                    Ok(p) => {
+                    Ok((addr, p)) => {
                         let secs = exp_dist.sample(&mut thread_rng());
                         self.pool.push(HeldPacket {
-                            next_hop: extract_next_hop(&p),
+                            next_hop: addr,
                             packet: p,
                             release_at: now + Duration::from_secs_f64(secs),
                         });
@@ -84,18 +89,16 @@ impl PoissonMixer {
             sleep(poll).await;
         }
     }
+
     pub fn pool_depth(&self) -> usize {
         self.pool.len()
     }
 }
 
-fn extract_next_hop(_p: &SphinxPacket) -> String {
-    "127.0.0.1:9001".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_exp_positive() {
         let dist = Exp::new(5.0_f64).unwrap();

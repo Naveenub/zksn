@@ -133,6 +133,25 @@ impl IdentityHolder {
     pub fn identity(&self) -> &ZksnIdentity {
         &self.identity
     }
+
+    /// Derive a deterministic X25519 private key for Sphinx routing.
+    /// SHA-256("zksn-routing-v1" || ed25519_secret_bytes)
+    pub fn routing_private_key(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let secret = self.identity.to_secret_bytes();
+        let mut h = Sha256::new();
+        h.update(b"zksn-routing-v1");
+        h.update(secret);
+        h.finalize().into()
+    }
+
+    /// X25519 public key corresponding to the routing private key.
+    pub fn routing_public_key(&self) -> [u8; 32] {
+        use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+        let privkey = self.routing_private_key();
+        let sk = StaticSecret::from(privkey);
+        X25519PublicKey::from(&sk).to_bytes()
+    }
 }
 impl std::fmt::Debug for IdentityHolder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

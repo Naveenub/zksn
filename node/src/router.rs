@@ -3,6 +3,7 @@ use anyhow::Result;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::time::Duration;
 use tracing::{debug, warn};
 use zksn_crypto::sphinx::{SphinxPacket, PACKET_SIZE};
 
@@ -14,13 +15,14 @@ impl PacketRouter {
     pub fn new(rx: mpsc::Receiver<(String, SphinxPacket)>) -> Self {
         Self { rx }
     }
+
     pub async fn run(&mut self) -> Result<()> {
-        while let Some((hop, pkt)) = self.rx.recv().await {
+        while let Some((addr, pkt)) = self.rx.recv().await {
             NodeMetrics::global().packets_forwarded.inc();
-            let h = hop.clone();
+            let a = addr.clone();
             tokio::spawn(async move {
-                if let Err(e) = send_packet(&h, &pkt).await {
-                    warn!("Forward to {h}: {e}");
+                if let Err(e) = send_packet(&a, &pkt).await {
+                    warn!("Forward to {a}: {e}");
                 }
             });
         }
@@ -29,11 +31,16 @@ impl PacketRouter {
 }
 
 async fn send_packet(addr: &str, pkt: &SphinxPacket) -> Result<()> {
-    let mut stream = TcpStream::connect(addr).await?;
+    let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow::anyhow!("connect timeout to {addr}"))?
+        .map_err(|e| anyhow::anyhow!("connect {addr}: {e}"))?;
+
+    let mut stream = stream;
     let mut buf = bincode::serialize(pkt)?;
     buf.resize(PACKET_SIZE, 0u8);
     stream.write_all(&buf).await?;
     stream.flush().await?;
-    debug!("Forwarded → {addr}");
+    debug!("Forwarded -> {addr}");
     Ok(())
 }
