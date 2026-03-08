@@ -8,6 +8,7 @@ description = "ZKSN cryptographic primitives — identity, Sphinx, Noise, ZKP"
 [dependencies]
 ed25519-dalek    = { workspace = true }
 x25519-dalek     = { workspace = true }
+curve25519-dalek = { workspace = true }
 snow             = { workspace = true }
 sha2             = { workspace = true }
 chacha20poly1305 = { workspace = true }
