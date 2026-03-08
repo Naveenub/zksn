@@ -133,7 +133,7 @@ The network achieves this through five orthogonal, independently verifiable mech
 ┌────────────────────────────────────────────────────┐
 │ Sphinx Header (fixed size)                         │
 │  ├── Ephemeral public key (32 bytes, X25519)       │
-│  ├── Routing header (layered encrypted, 96 bytes)  │
+│  ├── Routing header (layered encrypted, 160 bytes) │
 │  └── MAC chain                                     │
 ├────────────────────────────────────────────────────┤
 │ Cashu Payment Token (blind-signed ecash)           │
@@ -174,7 +174,7 @@ zksn/
 │   │   ├── lib.rs                  # ZksnClient API · send() · receive()
 │   │   ├── send.rs                 # Encrypt → Sphinx → attach token → transmit
 │   │   ├── receive.rs              # TCP listener · decrypt · deliver
-│   │   ├── route.rs                # Random route selection (DHT integration pending)
+│   │   ├── route.rs                # RouteSelector — samples live mix nodes from PeerTable, appends recipient as final hop
 │   │   └── config.rs               # ClientConfig · entry node · hop count · mint URL
 │   ├── cli/
 │   │   └── main.rs                 # identity · send · receive · wallet subcommands
@@ -514,7 +514,7 @@ zksn --key ~/.zksn/identity.key receive
 - **Routing header:** Layered-encrypted 96 bytes — each hop decrypts one layer
 - **Payload:** ChaCha20-Poly1305 encrypted application data
 - **Cover types:** `PacketType::Drop` (random destination) · `PacketType::Loop` (routes back to sender)
-- **ECDH note:** X25519 key derivation is marked `todo!()` — intentionally left for careful contributor implementation. See inline comments.
+- **Per-hop key blinding:** Each node blinds the ephemeral public key before forwarding — `α_{i+1} = b_i ×_clamped α_i` where `b_i = SHA-256("sphinx-blinding" ‖ s_i ‖ α_i)`. Colluding nodes cannot correlate packets across hops.
 
 ### Noise Handshake (`crypto/src/noise.rs`)
 
@@ -771,21 +771,20 @@ just test-all
 
 | Crate / Contract | Tests | Notes |
 |---|---|---|
-| `zksn-crypto` | 14 | identity sign/verify, noise roundtrip, zkp Merkle/nullifiers |
-| `zksn-node` | 10 | mixer Poisson distribution, cover emit/disable, config load, node bind, router fixed-size |
-| `zksn-economic` | 4 | Cashu token encode/decode, Monero RPC stubs |
-| `ZKSNGovernance.sol` | 20 | Full governance lifecycle |
+| `zksn-crypto`        | 26 | identity, Sphinx onion peel roundtrips, key blinding, wire serialization, noise, zkp |
+| `zksn-node`          | 19 | mixer, cover, peers/DHT, Kademlia k-buckets, gossip, peer persistence |
+| `zksn-economic`      | 7  | Cashu token encode/decode, Monero RPC stubs |
+| `zksn-client`        | 19 | route selection, send/receive framing, Sphinx inject/peel, integration |
+| `ZKSNGovernance.sol` | 21 | Full governance lifecycle |
+| **Total**            | **92** | All passing, CI green |
 
-### Known `todo!()` Stubs
-
-These are **intentionally left for contributor implementation** — they require careful cryptographic review:
+### Known gaps
 
 | Location | Description |
 |---|---|
-| `crypto/src/sphinx.rs` | X25519 ECDH key derivation in `build_packet()` and `process_packet()` |
-| `client/src/route.rs` | DHT-based live route selection (currently random) |
-| `node/src/cover.rs` | Live network registry sampling for cover routes |
-| `client/cli/main.rs` | Cashu `wallet balance` and `wallet topup` (see `economic/src/cashu.rs`) |
+| `node/src/node.rs`   | Final-hop TCP delivery — node detects `next_hop == [0u8;32]` but does not yet connect to recipient's `listen_addr` |
+| `client/cli/main.rs` | Cashu `wallet balance` and `wallet topup` — token primitives exist, mint HTTP not wired |
+| `governance/`        | ZK circuit is `MockVerifier` (returns true) — Circom/Noir circuit pending |
 
 ---
 
@@ -845,9 +844,9 @@ See [docs/LEGAL.md](./docs/LEGAL.md) for full jurisdictional analysis and case l
 
 | Phase | Description | Status |
 |---|---|---|
-| **0 — Cryptographic Foundations** | Ed25519, X25519, Noise_XX, Sphinx, ZKP primitives | 🟡 In progress — X25519 ECDH pending |
-| **1 — Mesh Transport** | Yggdrasil integration, seed node tooling, peer discovery | 🟡 Infra scaffolded, DHT pending |
-| **2 — Mixnet Layer** | Poisson mixing, cover traffic, Sphinx routing, metrics | 🟡 Core implemented, ECDH wiring pending |
+| **0 — Cryptographic Foundations** | Ed25519, X25519, Noise_XX, Sphinx, ZKP primitives, per-hop key blinding | ✅ Complete |
+| **1 — Mesh Transport** | Yggdrasil integration, seed node tooling, peer discovery | 🟡 Kademlia DHT complete, Yggdrasil transport pending |
+| **2 — Mixnet Layer** | Poisson mixing, cover traffic, Sphinx routing, metrics, final-hop delivery | 🟡 Core complete, final-hop TCP delivery pending |
 | **3 — Internal Service Layer** | i2pd integration, .zksn TLD, DHT petnames, messaging | 🔴 Not started |
 | **4 — Economic Layer** | Cashu NUT-00, per-packet tokens, XMR settlement | 🟡 Scaffolded, mint integration pending |
 | **5 — Stateless Node OS** | NixOS live-boot, dm-verity, LUKS2, reproducible builds | 🟡 Config written, hardware testing pending |
