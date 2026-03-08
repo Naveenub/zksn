@@ -94,7 +94,7 @@ The network achieves this through five orthogonal, independently verifiable mech
                            │
 ┌──────────────────────────▼──────────────────────────┐
 │              Layer 1 — Anonymous Service Plane      │
-│  I2P / i2pd · .b32.i2p addressing                  │
+│  I2P / i2pd · .b32.i2p addressing                   │
 │  .zksn internal TLD · DHT petname resolution        │
 └──────────────────────────┬──────────────────────────┘
                            │
