@@ -91,7 +91,7 @@ mod tests {
             max_queue_depth: 64,
             loop_cover_fraction: 0.5,
         };
-        let peers = Arc::new(PeerTable::new(16));
+        let peers = Arc::new(PeerTable::new([0u8; 32]));
         let (tx, mut rx) = mpsc::channel::<(String, SphinxPacket)>(64);
         let mut gen = CoverTrafficGenerator::new(cfg, tx, peers);
         tokio::spawn(async move {
@@ -109,7 +109,7 @@ mod tests {
             max_queue_depth: 64,
             loop_cover_fraction: 0.5,
         };
-        let peers = Arc::new(PeerTable::new(16));
+        let peers = Arc::new(PeerTable::new([0u8; 32]));
         let (tx, mut rx) = mpsc::channel::<(String, SphinxPacket)>(64);
         let mut gen = CoverTrafficGenerator::new(cfg, tx, peers);
         let h = tokio::spawn(async move { gen.run().await });
@@ -120,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_uses_real_peers_when_available() {
-        let peers = Arc::new(PeerTable::new(16));
+        let peers = Arc::new(PeerTable::new([0u8; 32]));
         peers
             .upsert(PeerInfo::new("10.0.0.1:9001".into(), [1u8; 32]))
             .await;
