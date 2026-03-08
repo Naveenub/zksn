@@ -36,11 +36,16 @@ impl MixNode {
         // Peer discovery
         let own_privkey = self.config.identity.routing_private_key();
         let own_pubkey = self.config.identity.routing_public_key();
+        let peer_store = self
+            .config
+            .keys
+            .key_store_path
+            .replace("identity.key", "peers.json");
         let discovery = Arc::new(PeerDiscovery::new(
             self.config.network.listen_addr.clone(),
             own_pubkey,
             self.config.network.bootstrap_peers.clone(),
-            self.config.network.max_peers,
+            Some(peer_store),
         ));
         let peers: Arc<PeerTable> = Arc::clone(&discovery.table);
 
