@@ -37,8 +37,7 @@ async fn send_packet(addr: &str, pkt: &SphinxPacket) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("connect {addr}: {e}"))?;
 
     let mut stream = stream;
-    let mut buf = bincode::serialize(pkt)?;
-    buf.resize(PACKET_SIZE, 0u8);
+    let buf = pkt.to_bytes();
     stream.write_all(&buf).await?;
     stream.flush().await?;
     debug!("Forwarded -> {addr}");

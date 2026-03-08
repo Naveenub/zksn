@@ -168,7 +168,8 @@ async fn handle_conn(
 
     NodeMetrics::global().packets_received.inc();
 
-    let pkt = bincode::deserialize::<SphinxPacket>(&buf)?;
+    let buf_arr: &[u8; PACKET_SIZE] = buf.as_slice().try_into()?;
+    let pkt = SphinxPacket::from_bytes(buf_arr);
 
     // Peel one Sphinx layer
     let (next_hop_key, peeled) =
