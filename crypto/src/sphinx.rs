@@ -1,36 +1,29 @@
 //! Sphinx packet format — fixed 2048-byte onion packets.
 //!
-//! ## Cryptographic design
+//! ## Per-hop key blinding
 //!
-//! The sender generates an ephemeral X25519 keypair and performs ECDH with
-//! each hop's long-term public key to derive a unique per-hop shared secret.
-//! These secrets are used to:
+//! Each mix node blinds the ephemeral public key before forwarding:
 //!
-//! 1. **Onion-encrypt the routing header** (back → front) so each node learns
-//!    only the immediate next hop.
-//! 2. **Onion-encrypt the payload** (back → front) so only the final
-//!    recipient can read the plaintext.
+//! ```text
+//! b_i     = SHA-256("sphinx-blinding" ‖ shared_secret_i ‖ α_i)
+//! α_{i+1} = b_i ×_clamped α_i
+//! ```
 //!
-//! ## Header construction invariant
+//! Because ×_clamped is commutative over the Montgomery group, the sender
+//! pre-computes each hop's shared secret as:
 //!
-//! Header is `MAX_HOPS × HOP_HEADER_SIZE` bytes. Build proceeds in reverse:
-//! prepend the next-hop address, then XOR-encrypt the full header with the
-//! current hop's keystream. On receipt, a node XOR-decrypts the header and
-//! reads the first `HOP_HEADER_SIZE` bytes as its next-hop address, then
-//! shifts the header left and zero-pads before forwarding. The decryption
-//! invariant holds because each node reads only position `[0..32]`, which is
-//! always correctly reconstructed regardless of keystream truncation.
+//! ```text
+//! s_i = e ×_clamped (b_{i-1} ×_clamped … ×_clamped (b_0 ×_clamped pk_i))
+//! ```
 //!
-//! ## Limitations (v0.1-alpha)
-//!
-//! The ephemeral public key is not blinded between hops, so colluding nodes
-//! could correlate packets by the shared ephemeral key. Per-hop key blinding
-//! (`α_i = b_{i−1} · α_{i−1}`) will be added in a future release.
+//! Every node in the route sees a unique ephemeral public key, eliminating
+//! the correlation attack available to colluding nodes in unblinded Sphinx.
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
 };
+use curve25519_dalek::MontgomeryPoint;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -42,8 +35,6 @@ pub const HOP_HEADER_SIZE: usize = 32;
 
 const HEADER_LEN: usize = HOP_HEADER_SIZE * MAX_HOPS; // 160 bytes
 const PAYLOAD_LEN: usize = PACKET_SIZE - 32 - HEADER_LEN; // 1856 bytes
-
-// ─── Error type ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Error)]
 pub enum SphinxError {
@@ -57,9 +48,6 @@ pub enum SphinxError {
     InvalidRoute,
 }
 
-// ─── Public types ──────────────────────────────────────────────────────────
-
-/// A node identity for routing purposes — wraps an X25519 public key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeIdentity {
     pub public_key: [u8; 32],
@@ -73,32 +61,25 @@ impl NodeIdentity {
     }
 }
 
-/// Cover traffic packet type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PacketType {
-    /// Real message payload.
     Message,
-    /// DROP: sent to a random node and silently discarded.
     Drop,
-    /// LOOP: routed back to the sender to verify path liveness.
     Loop,
 }
 
 /// A fixed-size Sphinx onion packet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SphinxPacket {
-    /// Sender's ephemeral X25519 public key (all hops use this for ECDH).
+    /// Ephemeral X25519 public key — blinded at each hop before forwarding.
     pub ephemeral_public_key: [u8; 32],
-    /// Layered-encrypted routing header (`HEADER_LEN` bytes).
     pub routing_header: Vec<u8>,
-    /// Onion-encrypted payload (`PAYLOAD_LEN` bytes).
     pub payload: Vec<u8>,
 }
 
 impl SphinxPacket {
-    /// Serialize to exactly `PACKET_SIZE` bytes:
-    ///   [32 ephemeral_public_key | 160 routing_header | 1856 payload]
-    /// No length prefixes — direct memory layout for wire transmission.
+    /// Serialize to exactly `PACKET_SIZE` bytes (no length prefixes).
+    /// Layout: [32 ephemeral_public_key | 160 routing_header | 1856 payload]
     pub fn to_bytes(&self) -> [u8; PACKET_SIZE] {
         let mut buf = [0u8; PACKET_SIZE];
         buf[..32].copy_from_slice(&self.ephemeral_public_key);
@@ -107,7 +88,6 @@ impl SphinxPacket {
         buf
     }
 
-    /// Deserialize from exactly `PACKET_SIZE` bytes.
     pub fn from_bytes(buf: &[u8; PACKET_SIZE]) -> Self {
         let mut ephemeral_public_key = [0u8; 32];
         ephemeral_public_key.copy_from_slice(&buf[..32]);
@@ -121,15 +101,13 @@ impl SphinxPacket {
     }
 }
 
-/// Per-hop key material — exposed for diagnostics and testing.
 pub struct HopKeys {
     pub shared_secret: [u8; 32],
     pub cipher_key: [u8; 32],
 }
 
-// ─── Internal key-derivation helpers ───────────────────────────────────────
+// ─── Internal helpers ──────────────────────────────────────────────────────
 
-/// Derive a 32-byte key:  SHA-256(label ‖ shared_secret).
 fn derive_key(label: &[u8], shared_secret: &[u8; 32]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(label);
@@ -137,8 +115,6 @@ fn derive_key(label: &[u8], shared_secret: &[u8; 32]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// Produce `length` pseudo-random bytes via SHA-256 counter-mode:
-/// block_i = SHA-256(key ‖ label ‖ i_le32).
 fn keystream(key: &[u8; 32], label: &[u8], length: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(length + 32);
     let mut counter = 0u32;
@@ -154,26 +130,35 @@ fn keystream(key: &[u8; 32], label: &[u8], length: usize) -> Vec<u8> {
     out
 }
 
-/// XOR `buf` in-place with `stream` (zip length).
 fn xor_bytes(buf: &mut [u8], stream: &[u8]) {
     for (b, s) in buf.iter_mut().zip(stream.iter()) {
         *b ^= s;
     }
 }
 
+/// X25519 scalar multiplication using `mul_clamped` — matches x25519-dalek.
+fn x25519_mul(scalar: [u8; 32], point: [u8; 32]) -> [u8; 32] {
+    MontgomeryPoint(point).mul_clamped(scalar).0
+}
+
+/// X25519 base-point multiplication.
+fn x25519_basepoint(scalar: [u8; 32]) -> [u8; 32] {
+    curve25519_dalek::constants::X25519_BASEPOINT
+        .mul_clamped(scalar)
+        .0
+}
+
+/// b_i = SHA-256("sphinx-blinding" ‖ shared_secret ‖ alpha)
+fn blinding_factor(shared_secret: &[u8; 32], alpha: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"sphinx-blinding");
+    h.update(shared_secret);
+    h.update(alpha);
+    h.finalize().into()
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
-/// Build a Sphinx onion packet for `route` carrying `payload`.
-///
-/// # Routing header construction (back → front)
-///
-/// ```text
-/// Start:  header = [0; HEADER_LEN]
-/// For i = n-1 .. 0:
-///   header[HOP_HEADER_SIZE..] = header[..HEADER_LEN-HOP_HEADER_SIZE]  // shift right
-///   header[0..HOP_HEADER_SIZE] = route[i+1].public_key                 // prepend next-hop
-///   header ^= keystream(cipher_key[i], "header", HEADER_LEN)           // encrypt layer
-/// ```
 pub fn build_packet(
     route: &[NodeIdentity],
     payload: &[u8],
@@ -187,113 +172,111 @@ pub fn build_packet(
     }
 
     let n = route.len();
-
-    // 1. Ephemeral X25519 keypair (sender-side only; not stored in packet secret).
     let secret_bytes: [u8; 32] = rng.gen();
-    let ephemeral_secret = StaticSecret::from(secret_bytes);
-    let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
+    let ephemeral_public = x25519_basepoint(secret_bytes);
 
-    // 2. Per-hop shared secrets → cipher keys via ECDH.
-    //    cipher_key[i] = SHA-256("sphinx-cipher" ‖ DH(ephemeral_secret, route[i].pubkey))
-    let cipher_keys: Vec<[u8; 32]> = route
-        .iter()
-        .map(|hop| {
-            let hop_pubkey = X25519PublicKey::from(hop.public_key);
-            let shared = ephemeral_secret.diffie_hellman(&hop_pubkey);
-            derive_key(b"sphinx-cipher", &shared.to_bytes())
-        })
-        .collect();
+    // Per-hop shared secrets with key blinding.
+    //
+    // For hop i: s_i = e ×_clamped (b_{i-1} ×_clamped … ×_clamped (b_0 ×_clamped pk_i))
+    //
+    // We accumulate blinding factors and apply all preceding ones to pk_i.
+    // ×_clamped commutativity guarantees the receiver (using sk_i ×_clamped α_i)
+    // arrives at the same shared secret.
+    let mut alpha = ephemeral_public;
+    let mut blind_factors: Vec<[u8; 32]> = Vec::with_capacity(n);
+    let mut cipher_keys: Vec<[u8; 32]> = Vec::with_capacity(n);
 
-    // 3. Build onion routing header — back to front.
+    for i in 0..n {
+        // Apply all preceding blinding factors to pk_i (n ≤ MAX_HOPS = 5).
+        let mut blinded_pk = route[i].public_key;
+        for bf in &blind_factors {
+            blinded_pk = x25519_mul(*bf, blinded_pk);
+        }
+
+        let s_i = x25519_mul(secret_bytes, blinded_pk);
+        cipher_keys.push(derive_key(b"sphinx-cipher", &s_i));
+
+        let b_i = blinding_factor(&s_i, &alpha);
+        blind_factors.push(b_i);
+        alpha = x25519_mul(b_i, alpha);
+    }
+
+    // Build onion routing header — back to front.
     let mut header = vec![0u8; HEADER_LEN];
-
     for i in (0..n).rev() {
-        // Shift existing header right by HOP_HEADER_SIZE to make room at the front.
         header.copy_within(0..HEADER_LEN - HOP_HEADER_SIZE, HOP_HEADER_SIZE);
-
-        // Write next-hop address at position 0 ([0;32] signals end of route).
         if i + 1 < n {
             header[..HOP_HEADER_SIZE].copy_from_slice(&route[i + 1].public_key);
         } else {
             header[..HOP_HEADER_SIZE].fill(0);
         }
-
-        // Encrypt (XOR) entire header under this hop's cipher key.
         let ks = keystream(&cipher_keys[i], b"header", HEADER_LEN);
         xor_bytes(&mut header, &ks);
     }
 
-    // 4. Onion-encrypt payload — back to front.
-    //    Each hop peels one layer; after all n peels the plaintext is recovered.
+    // Onion-encrypt payload — back to front.
     let mut enc_payload = vec![0u8; PAYLOAD_LEN];
     enc_payload[..payload.len()].copy_from_slice(payload);
-
     for i in (0..n).rev() {
         let ks = keystream(&cipher_keys[i], b"payload", PAYLOAD_LEN);
         xor_bytes(&mut enc_payload, &ks);
     }
 
     Ok(SphinxPacket {
-        ephemeral_public_key: ephemeral_public.to_bytes(),
+        ephemeral_public_key: ephemeral_public,
         routing_header: header,
         payload: enc_payload,
     })
 }
 
-/// Process a received Sphinx packet at a mix node.
+/// Process a received Sphinx packet.
 ///
-/// Returns `(next_hop_pubkey, peeled_packet)`. The node should forward
-/// `peeled_packet` to `next_hop_pubkey`. If `next_hop_pubkey == [0u8; 32]`
-/// this node is the final destination.
-///
-/// # Header peeling
-///
-/// ```text
-/// header ^= keystream(cipher_key, "header", HEADER_LEN)  // decrypt layer
-/// next_hop = header[0..HOP_HEADER_SIZE]                  // read routing info
-/// header = header[HOP_HEADER_SIZE..] ++ [0; HOP_HEADER_SIZE]  // consume slot
-/// ```
+/// Returns `(next_hop_pubkey, peeled_packet)`. The forwarded packet carries
+/// a freshly blinded `ephemeral_public_key` so downstream nodes each see a
+/// distinct value — preventing correlation by colluding nodes.
 pub fn peel_layer(
     packet: &SphinxPacket,
     own_private_key: &[u8; 32],
 ) -> Result<([u8; 32], SphinxPacket), SphinxError> {
-    // ECDH: same shared secret the sender computed for this hop.
+    // Shared secret via x25519-dalek (matches build_packet's x25519_mul).
     let own_secret = StaticSecret::from(*own_private_key);
     let ephem_pubkey = X25519PublicKey::from(packet.ephemeral_public_key);
     let shared = own_secret.diffie_hellman(&ephem_pubkey);
-    let cipher_key = derive_key(b"sphinx-cipher", &shared.to_bytes());
+    let shared_bytes = shared.to_bytes();
+    let cipher_key = derive_key(b"sphinx-cipher", &shared_bytes);
 
-    // Decrypt routing header.
+    // Decrypt and consume routing header.
     let mut header = packet.routing_header.clone();
     let ks = keystream(&cipher_key, b"header", HEADER_LEN);
     xor_bytes(&mut header, &ks);
 
-    // First HOP_HEADER_SIZE bytes = next-hop address.
     let mut next_hop = [0u8; HOP_HEADER_SIZE];
     next_hop.copy_from_slice(&header[..HOP_HEADER_SIZE]);
 
-    // Consume this node's routing slot: shift left, zero-pad right.
     header.copy_within(HOP_HEADER_SIZE..HEADER_LEN, 0);
     header[HEADER_LEN - HOP_HEADER_SIZE..].fill(0);
 
-    // Peel one payload encryption layer.
+    // Peel payload layer.
     let mut payload = packet.payload.clone();
     let ks_pay = keystream(&cipher_key, b"payload", payload.len());
     xor_bytes(&mut payload, &ks_pay);
 
+    // Blind ephemeral key for next hop: α_{i+1} = b_i ×_clamped α_i
+    let b_i = blinding_factor(&shared_bytes, &packet.ephemeral_public_key);
+    let next_alpha = x25519_mul(b_i, packet.ephemeral_public_key);
+
     Ok((
         next_hop,
         SphinxPacket {
-            ephemeral_public_key: packet.ephemeral_public_key,
+            ephemeral_public_key: next_alpha,
             routing_header: header,
             payload,
         },
     ))
 }
 
-// ─── Utility: single-hop symmetric encryption (ChaCha20-Poly1305) ──────────
+// ─── Utility ───────────────────────────────────────────────────────────────
 
-/// Encrypt `payload` with a 32-byte key using ChaCha20-Poly1305 (AEAD).
 pub fn encrypt_payload(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, SphinxError> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = Nonce::from_slice(&[0u8; 12]);
@@ -302,7 +285,6 @@ pub fn encrypt_payload(key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, Sphinx
         .map_err(|_| SphinxError::EncryptionFailed)
 }
 
-/// Decrypt `ciphertext` with a 32-byte key using ChaCha20-Poly1305 (AEAD).
 pub fn decrypt_payload(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, SphinxError> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = Nonce::from_slice(&[0u8; 12]);
@@ -311,9 +293,6 @@ pub fn decrypt_payload(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Sph
         .map_err(|_| SphinxError::DecryptionFailed)
 }
 
-// ─── Cover traffic ─────────────────────────────────────────────────────────
-
-/// Generate a DROP cover packet (random payload, first header byte = 0xDD).
 pub fn generate_drop_packet(
     route: &[NodeIdentity],
     rng: &mut impl rand::Rng,
@@ -327,7 +306,6 @@ pub fn generate_drop_packet(
     Ok(pkt)
 }
 
-/// Generate a LOOP cover packet (random payload, first header byte = 0xAA).
 pub fn generate_loop_packet(
     route: &[NodeIdentity],
     rng: &mut impl rand::Rng,
@@ -348,8 +326,6 @@ mod tests {
     use super::*;
     use rand::Rng;
 
-    /// Build a route of `n` real X25519 keypairs.
-    /// Returns (identities for the packet, private keys for peeling).
     fn real_route(n: usize) -> (Vec<NodeIdentity>, Vec<[u8; 32]>) {
         let mut rng = rand::thread_rng();
         let mut identities = Vec::new();
@@ -364,7 +340,6 @@ mod tests {
         (identities, privkeys)
     }
 
-    /// Dummy route with arbitrary (non-zero) bytes for structure-only tests.
     fn dummy_route(n: usize) -> Vec<NodeIdentity> {
         (0..n)
             .map(|i| NodeIdentity {
@@ -372,8 +347,6 @@ mod tests {
             })
             .collect()
     }
-
-    // ── Existing structure tests (unchanged) ───────────────────────────────
 
     #[test]
     fn test_build_packet_returns_correct_structure() {
@@ -432,11 +405,6 @@ mod tests {
         assert!(generate_loop_packet(&dummy_route(3), &mut rng).is_ok());
     }
 
-    // ── New ECDH onion-routing tests ───────────────────────────────────────
-
-    /// Core test: build a 3-hop packet, peel all layers in order.
-    /// Each hop must reveal the correct next-hop address, and the final
-    /// payload must equal the original plaintext.
     #[test]
     fn test_onion_peel_roundtrip_3_hops() {
         let mut rng = rand::thread_rng();
@@ -445,23 +413,18 @@ mod tests {
 
         let pkt = build_packet(&route, plaintext, &mut rng).unwrap();
 
-        // Hop 0 → reveals hop 1's address.
         let (next1, pkt1) = peel_layer(&pkt, &privkeys[0]).unwrap();
         assert_eq!(next1, route[1].public_key, "hop 0 must point to hop 1");
 
-        // Hop 1 → reveals hop 2's address.
         let (next2, pkt2) = peel_layer(&pkt1, &privkeys[1]).unwrap();
         assert_eq!(next2, route[2].public_key, "hop 1 must point to hop 2");
 
-        // Hop 2 (final) → next-hop is the zero sentinel.
         let (next3, pkt3) = peel_layer(&pkt2, &privkeys[2]).unwrap();
         assert_eq!(next3, [0u8; 32], "final hop must have zero next-hop");
 
-        // Payload fully decrypted after all peels.
         assert_eq!(&pkt3.payload[..plaintext.len()], plaintext.as_ref());
     }
 
-    /// Single-hop end-to-end roundtrip.
     #[test]
     fn test_onion_peel_single_hop() {
         let mut rng = rand::thread_rng();
@@ -471,11 +434,10 @@ mod tests {
         let pkt = build_packet(&route, plaintext, &mut rng).unwrap();
         let (next, peeled) = peel_layer(&pkt, &privkeys[0]).unwrap();
 
-        assert_eq!(next, [0u8; 32], "single hop has no next");
+        assert_eq!(next, [0u8; 32]);
         assert_eq!(&peeled.payload[..plaintext.len()], plaintext.as_ref());
     }
 
-    /// MAX_HOPS (5) end-to-end roundtrip.
     #[test]
     fn test_onion_peel_max_hops() {
         let mut rng = rand::thread_rng();
@@ -489,13 +451,12 @@ mod tests {
             if i < MAX_HOPS - 1 {
                 assert_eq!(next, route[i + 1].public_key, "hop {i} wrong next-hop");
             } else {
-                assert_eq!(next, [0u8; 32], "last hop must have zero next-hop");
+                assert_eq!(next, [0u8; 32]);
             }
         }
         assert_eq!(&pkt.payload[..plaintext.len()], plaintext.as_ref());
     }
 
-    /// Wrong private key must NOT recover the plaintext payload.
     #[test]
     fn test_wrong_privkey_garbles_payload() {
         let mut rng = rand::thread_rng();
@@ -506,10 +467,68 @@ mod tests {
         let wrong_key = [0xFFu8; 32];
         let (_next, bad) = peel_layer(&pkt, &wrong_key).unwrap();
 
-        assert_ne!(
-            &bad.payload[..plaintext.len()],
-            plaintext.as_ref(),
-            "wrong key must not recover plaintext"
-        );
+        assert_ne!(&bad.payload[..plaintext.len()], plaintext.as_ref());
+    }
+
+    /// Core blinding test: every hop sees a DIFFERENT ephemeral public key.
+    #[test]
+    fn test_ephemeral_key_differs_per_hop() {
+        let mut rng = rand::thread_rng();
+        let (route, privkeys) = real_route(MAX_HOPS);
+
+        let pkt = build_packet(&route, b"blinding test", &mut rng).unwrap();
+        let mut seen: Vec<[u8; 32]> = vec![pkt.ephemeral_public_key];
+
+        let mut current = pkt;
+        for privkey in &privkeys[..MAX_HOPS - 1] {
+            let (_next, peeled) = peel_layer(&current, privkey).unwrap();
+            assert_ne!(
+                peeled.ephemeral_public_key,
+                *seen.last().unwrap(),
+                "ephemeral key must change each hop"
+            );
+            assert!(
+                !seen.contains(&peeled.ephemeral_public_key),
+                "ephemeral key must be unique across all hops"
+            );
+            seen.push(peeled.ephemeral_public_key);
+            current = peeled;
+        }
+    }
+
+    /// Blinding is deterministic across independent peel runs.
+    #[test]
+    fn test_blinding_is_deterministic() {
+        let mut rng = rand::thread_rng();
+        let (route, privkeys) = real_route(3);
+        let pkt = build_packet(&route, b"deterministic", &mut rng).unwrap();
+
+        let (_, p1a) = peel_layer(&pkt, &privkeys[0]).unwrap();
+        let (_, p2a) = peel_layer(&p1a, &privkeys[1]).unwrap();
+        let (_, p1b) = peel_layer(&pkt, &privkeys[0]).unwrap();
+        let (_, p2b) = peel_layer(&p1b, &privkeys[1]).unwrap();
+
+        assert_eq!(p1a.ephemeral_public_key, p1b.ephemeral_public_key);
+        assert_eq!(p2a.ephemeral_public_key, p2b.ephemeral_public_key);
+    }
+
+    /// to_bytes / from_bytes roundtrip preserves all fields and peels correctly.
+    #[test]
+    fn test_wire_serialization_roundtrip() {
+        let mut rng = rand::thread_rng();
+        let (route, privkeys) = real_route(2);
+        let plaintext = b"wire format";
+
+        let original = build_packet(&route, plaintext, &mut rng).unwrap();
+        let restored = SphinxPacket::from_bytes(&original.to_bytes());
+
+        assert_eq!(original.ephemeral_public_key, restored.ephemeral_public_key);
+        assert_eq!(original.routing_header, restored.routing_header);
+        assert_eq!(original.payload, restored.payload);
+
+        let (next, peeled) = peel_layer(&restored, &privkeys[0]).unwrap();
+        assert_eq!(next, route[1].public_key);
+        let (_, final_pkt) = peel_layer(&peeled, &privkeys[1]).unwrap();
+        assert_eq!(&final_pkt.payload[..plaintext.len()], plaintext.as_ref());
     }
 }
