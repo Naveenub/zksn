@@ -169,7 +169,7 @@ pub struct PeerDiscovery {
     /// Seed nodes from config.
     bootstrap_peers: Vec<String>,
     /// Shared peer table.
-    pub table: PeerTable,
+    pub table: Arc<PeerTable>,
 }
 
 impl PeerDiscovery {
@@ -183,7 +183,7 @@ impl PeerDiscovery {
             own_addr,
             own_pubkey,
             bootstrap_peers,
-            table: PeerTable::new(max_peers),
+            table: Arc::new(PeerTable::new(max_peers)),
         }
     }
 

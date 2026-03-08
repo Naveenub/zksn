@@ -74,12 +74,6 @@ impl CoverTrafficGenerator {
                 NodeIdentity { public_key: k }
             })
             .collect();
-        ("127.0.0.1:9001".to_string(), route)
-            .1
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        // Return with loopback as fallback addr
         (route, "127.0.0.1:9001".to_string())
     }
 }
