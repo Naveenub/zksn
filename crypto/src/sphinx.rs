@@ -90,9 +90,9 @@ pub struct SphinxPacket {
     /// Sender's ephemeral X25519 public key (all hops use this for ECDH).
     pub ephemeral_public_key: [u8; 32],
     /// Layered-encrypted routing header (`HEADER_LEN` bytes).
-    pub routing_header: Vec<u8>,
+    pub routing_header: [u8; HEADER_LEN],
     /// Onion-encrypted payload (`PAYLOAD_LEN` bytes).
-    pub payload: Vec<u8>,
+    pub payload: [u8; PAYLOAD_LEN],
 }
 
 /// Per-hop key material — exposed for diagnostics and testing.
@@ -209,8 +209,12 @@ pub fn build_packet(
 
     Ok(SphinxPacket {
         ephemeral_public_key: ephemeral_public.to_bytes(),
-        routing_header: header,
-        payload: enc_payload,
+        routing_header: header
+            .try_into()
+            .expect("header is exactly HEADER_LEN bytes"),
+        payload: enc_payload
+            .try_into()
+            .expect("payload is exactly PAYLOAD_LEN bytes"),
     })
 }
 
