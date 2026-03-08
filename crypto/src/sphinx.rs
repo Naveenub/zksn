@@ -90,9 +90,35 @@ pub struct SphinxPacket {
     /// Sender's ephemeral X25519 public key (all hops use this for ECDH).
     pub ephemeral_public_key: [u8; 32],
     /// Layered-encrypted routing header (`HEADER_LEN` bytes).
-    pub routing_header: [u8; HEADER_LEN],
+    pub routing_header: Vec<u8>,
     /// Onion-encrypted payload (`PAYLOAD_LEN` bytes).
-    pub payload: [u8; PAYLOAD_LEN],
+    pub payload: Vec<u8>,
+}
+
+impl SphinxPacket {
+    /// Serialize to exactly `PACKET_SIZE` bytes:
+    ///   [32 ephemeral_public_key | 160 routing_header | 1856 payload]
+    /// No length prefixes — direct memory layout for wire transmission.
+    pub fn to_bytes(&self) -> [u8; PACKET_SIZE] {
+        let mut buf = [0u8; PACKET_SIZE];
+        buf[..32].copy_from_slice(&self.ephemeral_public_key);
+        buf[32..32 + HEADER_LEN].copy_from_slice(&self.routing_header);
+        buf[32 + HEADER_LEN..].copy_from_slice(&self.payload);
+        buf
+    }
+
+    /// Deserialize from exactly `PACKET_SIZE` bytes.
+    pub fn from_bytes(buf: &[u8; PACKET_SIZE]) -> Self {
+        let mut ephemeral_public_key = [0u8; 32];
+        ephemeral_public_key.copy_from_slice(&buf[..32]);
+        let routing_header = buf[32..32 + HEADER_LEN].to_vec();
+        let payload = buf[32 + HEADER_LEN..].to_vec();
+        Self {
+            ephemeral_public_key,
+            routing_header,
+            payload,
+        }
+    }
 }
 
 /// Per-hop key material — exposed for diagnostics and testing.
@@ -209,12 +235,8 @@ pub fn build_packet(
 
     Ok(SphinxPacket {
         ephemeral_public_key: ephemeral_public.to_bytes(),
-        routing_header: header
-            .try_into()
-            .expect("header is exactly HEADER_LEN bytes"),
-        payload: enc_payload
-            .try_into()
-            .expect("payload is exactly PAYLOAD_LEN bytes"),
+        routing_header: header,
+        payload: enc_payload,
     })
 }
 
