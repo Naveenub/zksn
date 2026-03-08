@@ -12,6 +12,7 @@ path = "cli/main.rs"
 [dependencies]
 zksn-crypto   = { path = "../crypto" }
 zksn-economic = { path = "../economic" }
+zksn-node     = { path = "../node" }
 
 tokio              = { workspace = true }
 serde              = { workspace = true }
@@ -22,6 +23,8 @@ tracing-subscriber = { workspace = true }
 thiserror          = { workspace = true }
 anyhow             = { workspace = true }
 rand               = { workspace = true }
+sha2               = { workspace = true }
+x25519-dalek       = { workspace = true }
 zeroize            = { workspace = true }
 hex                = { workspace = true }
 clap               = { version = "4",   features = ["derive"] }
@@ -30,3 +33,4 @@ indicatif          = "0.17"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile   = "3"
