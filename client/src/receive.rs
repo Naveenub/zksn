@@ -57,7 +57,8 @@ async fn handle_delivery(
     let mut buf = vec![0u8; PACKET_SIZE];
     stream.read_exact(&mut buf).await?;
 
-    let pkt = bincode::deserialize::<SphinxPacket>(&buf)?;
+    let buf_arr: &[u8; PACKET_SIZE] = buf.as_slice().try_into()?;
+    let pkt = SphinxPacket::from_bytes(buf_arr);
 
     let (_next_hop, peeled) =
         peel_layer(&pkt, own_privkey).map_err(|e| anyhow::anyhow!("peel_layer: {e:?}"))?;
@@ -83,8 +84,7 @@ mod tests {
         }];
         let payload = frame_payload(message).unwrap();
         let pkt = build_packet(&route, &payload, &mut rand::thread_rng()).unwrap();
-        let mut buf = bincode::serialize(&pkt).unwrap();
-        buf.resize(PACKET_SIZE, 0u8);
+        let buf = pkt.to_bytes();
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         stream.write_all(&buf).await.unwrap();
         stream.flush().await.unwrap();

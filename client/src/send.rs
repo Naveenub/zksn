@@ -89,8 +89,7 @@ async fn inject_packet(addr: &str, pkt: &SphinxPacket) -> Result<()> {
         .map_err(|_| anyhow!("Connection timeout to entry node {addr}"))?
         .map_err(|e| anyhow!("Cannot connect to entry node {addr}: {e}"))?;
 
-    let mut buf = bincode::serialize(pkt)?;
-    buf.resize(PACKET_SIZE, 0u8);
+    let buf = pkt.to_bytes();
     stream.write_all(&buf).await?;
     stream.flush().await?;
     debug!("Injected packet → {addr}");
