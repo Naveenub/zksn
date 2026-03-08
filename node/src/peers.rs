@@ -78,8 +78,6 @@ pub enum GossipMsg {
     GetPeers,
     /// Response: a list of known peers.
     Peers { peers: Vec<PeerInfo> },
-    /// Acknowledge an Announce (no-op body, keeps connection alive for GetPeers).
-    Ok,
 }
 
 // ─── peer table ──────────────────────────────────────────────────────────────
@@ -281,7 +279,7 @@ impl PeerDiscovery {
                 GossipMsg::Announce { addr, public_key } => {
                     debug!("Announce from {addr}");
                     self.table.upsert(PeerInfo::new(addr, public_key)).await;
-                    let _ = send_msg(&mut stream, &GossipMsg::Ok).await;
+                    // No ack — client sends GetPeers immediately after Announce
                 }
                 GossipMsg::GetPeers => {
                     let peers = self.table.sample(MAX_PEERS_RESPONSE).await;
