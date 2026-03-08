@@ -320,6 +320,7 @@ pub fn generate_loop_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::Rng;
 
     /// Build a route of `n` real X25519 keypairs.
     /// Returns (identities for the packet, private keys for peeling).
