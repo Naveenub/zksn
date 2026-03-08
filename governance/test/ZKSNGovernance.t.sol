@@ -5,16 +5,16 @@ import "../contracts/ZKSNGovernance.sol";
 import "../contracts/MockVerifier.sol";
 
 contract ZKSNGovernanceTest is Test {
-    ZKSNGovernance  gov;
-    MockVerifier    mock;
+    ZKSNGovernance gov;
+    MockVerifier mock;
     StrictMockVerifier strict;
-    bytes32 constant ROOT  = keccak256("initial_root");
-    bytes   constant PROOF = hex"deadbeef";
+    bytes32 constant ROOT = keccak256("initial_root");
+    bytes constant PROOF = hex"deadbeef";
 
     function setUp() public {
-        mock   = new MockVerifier();
+        mock = new MockVerifier();
         strict = new StrictMockVerifier();
-        gov    = new ZKSNGovernance(address(mock), ROOT);
+        gov = new ZKSNGovernance(address(mock), ROOT);
     }
 
     function _proposal() internal returns (bytes32) {
@@ -23,28 +23,28 @@ contract ZKSNGovernanceTest is Test {
 
     function test_CreateProposal() public {
         bytes32 id = _proposal();
-        (bytes32 ch,,,,, ) = gov.getProposal(id);
+        (bytes32 ch,,,,,) = gov.getProposal(id);
         assertEq(ch, keccak256("change"));
     }
 
     function test_VoteYes() public {
-        bytes32 id  = _proposal();
+        bytes32 id = _proposal();
         bytes32 nul = keccak256("voter1");
         gov.castVote(id, nul, true, PROOF);
-        (,,uint256 yes,,,) = gov.getProposal(id);
+        (,, uint256 yes,,,) = gov.getProposal(id);
         assertEq(yes, 1);
     }
 
     function test_VoteNo() public {
-        bytes32 id  = _proposal();
+        bytes32 id = _proposal();
         bytes32 nul = keccak256("voter1");
         gov.castVote(id, nul, false, PROOF);
-        (,,,uint256 no,,) = gov.getProposal(id);
+        (,,, uint256 no,,) = gov.getProposal(id);
         assertEq(no, 1);
     }
 
     function test_DoubleVotePrevented() public {
-        bytes32 id  = _proposal();
+        bytes32 id = _proposal();
         bytes32 nul = keccak256("voter1");
         gov.castVote(id, nul, true, PROOF);
         vm.expectRevert("Already voted");
@@ -139,7 +139,7 @@ contract ZKSNGovernanceTest is Test {
     }
 
     function test_HasVoted() public {
-        bytes32 id  = _proposal();
+        bytes32 id = _proposal();
         bytes32 nul = keccak256("voter_check");
         assertFalse(gov.hasVoted(nul));
         gov.castVote(id, nul, true, PROOF);
