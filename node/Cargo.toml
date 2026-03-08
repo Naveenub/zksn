@@ -24,6 +24,8 @@ tracing-subscriber = { workspace = true }
 thiserror          = { workspace = true }
 anyhow             = { workspace = true }
 rand               = { workspace = true }
+x25519-dalek       = { workspace = true }
+sha2               = { workspace = true }
 zeroize            = { workspace = true }
 hex                = { workspace = true }
 rand_distr         = "0.4"

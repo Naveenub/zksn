@@ -2,10 +2,14 @@
 # Copy to node.toml and edit. Private keys are NEVER stored here.
 
 [network]
-listen_addr        = "[::1]:9001"
+listen_addr        = "0.0.0.0:9001"
 max_peers          = 64
 connect_timeout_ms = 5000
-bootstrap_peers    = []
+# Seed nodes — add at least one to join the network
+bootstrap_peers    = [
+    "seed1.zksn.network:9001",
+    "seed2.zksn.network:9001",
+]
 
 [mixing]
 poisson_lambda_ms   = 200
