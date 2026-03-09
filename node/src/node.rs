@@ -3,6 +3,7 @@ use crate::{
     cover::CoverTrafficGenerator,
     metrics::NodeMetrics,
     mixer::PoissonMixer,
+    payment::PaymentGuard,
     peers::{PeerDiscovery, PeerTable},
     router::PacketRouter,
 };
@@ -12,6 +13,15 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use zksn_crypto::sphinx::{peel_layer, SphinxPacket, PACKET_SIZE};
+
+/// Magic prefix identifying a `PaymentEnvelope` frame (b"ZKSN").
+///
+/// Wire format:
+///   [4 bytes: PAYMENT_MAGIC]
+///   [4 bytes: u32 LE token_json_len]
+///   [token_json_len bytes: CashuToken JSON]
+///   [PACKET_SIZE bytes: Sphinx packet]
+pub const PAYMENT_MAGIC: [u8; 4] = *b"ZKSN";
 
 pub struct MixNode {
     config: NodeConfig,
@@ -28,12 +38,10 @@ impl MixNode {
     pub async fn run(self) -> Result<()> {
         let depth = self.config.mixing.max_queue_depth;
 
-        // Channels — mixer now works with (addr, packet) pairs
         let (tx_in, rx_in) = mpsc::channel::<(String, SphinxPacket)>(depth);
         let (tx_out, rx_out) = mpsc::channel::<(String, SphinxPacket)>(depth);
         let (tx_cov, rx_cov) = mpsc::channel::<(String, SphinxPacket)>(1024);
 
-        // Peer discovery
         let own_privkey = self.config.identity.routing_private_key();
         let own_pubkey = self.config.identity.routing_public_key();
         let peer_store = self
@@ -54,7 +62,11 @@ impl MixNode {
             disc_clone.run().await;
         });
 
-        // Mixer
+        let payment_guard = Arc::new(PaymentGuard::new(
+            &self.config.economic,
+            self.config.testnet,
+        ));
+
         let mix_cfg = self.config.mixing.clone();
         tokio::spawn(async move {
             let mut m = PoissonMixer::new(mix_cfg, rx_in, rx_cov, tx_out);
@@ -63,7 +75,6 @@ impl MixNode {
             }
         });
 
-        // Cover traffic
         let cov_cfg = self.config.mixing.clone();
         let cov_peers = Arc::clone(&peers);
         tokio::spawn(async move {
@@ -73,7 +84,6 @@ impl MixNode {
             }
         });
 
-        // Packet router
         tokio::spawn(async move {
             let mut r = PacketRouter::new(rx_out);
             if let Err(e) = r.run().await {
@@ -81,9 +91,15 @@ impl MixNode {
             }
         });
 
-        info!("Mix node ready — peer discovery started");
+        info!(
+            "Mix node ready ({})",
+            if self.config.testnet {
+                "testnet — payments not enforced"
+            } else {
+                "mainnet — payment enforcement active"
+            }
+        );
 
-        // Accept loop
         loop {
             match self.listener.accept().await {
                 Ok((stream, peer_addr)) => {
@@ -95,10 +111,12 @@ impl MixNode {
                     let listen_addr = self.config.network.listen_addr.clone();
                     let peer_table = Arc::clone(&peers);
                     let disc = Arc::clone(&discovery);
+                    let guard = Arc::clone(&payment_guard);
 
                     tokio::spawn(async move {
                         if let Err(e) =
-                            handle_conn(stream, tx, &privkey, listen_addr, peer_table, disc).await
+                            handle_conn(stream, tx, &privkey, listen_addr, peer_table, disc, guard)
+                                .await
                         {
                             warn!("{peer_addr}: {e}");
                         }
@@ -111,14 +129,6 @@ impl MixNode {
     }
 }
 
-/// Handle an incoming TCP connection.
-///
-/// Determines whether the incoming data is a Sphinx packet or a gossip
-/// message by inspecting the first 4 bytes:
-/// - If they look like a valid gossip length prefix (< 64 KiB) AND the
-///   total frame size doesn't match `PACKET_SIZE`, treat as gossip.
-/// - Otherwise deserialize as a Sphinx packet, peel one onion layer, and
-///   forward (addr, peeled_packet) to the mixer.
 async fn handle_conn(
     mut stream: tokio::net::TcpStream,
     tx: mpsc::Sender<(String, SphinxPacket)>,
@@ -126,26 +136,50 @@ async fn handle_conn(
     own_listen_addr: String,
     peers: Arc<PeerTable>,
     discovery: Arc<PeerDiscovery>,
+    payment_guard: Arc<PaymentGuard>,
 ) -> Result<()> {
     use tokio::io::AsyncReadExt;
 
-    // Peek first 4 bytes to decide packet vs gossip
     let mut peek = [0u8; 4];
     stream.read_exact(&mut peek).await?;
-    let possible_len = u32::from_le_bytes(peek) as usize;
 
+    // ── PaymentEnvelope ───────────────────────────────────────────────────────
+    if peek == PAYMENT_MAGIC {
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await?;
+        let token_len = u32::from_le_bytes(len_buf) as usize;
+
+        if token_len == 0 || token_len > 65_536 {
+            return Err(anyhow::anyhow!(
+                "PaymentEnvelope token_len {token_len} out of range"
+            ));
+        }
+
+        let mut token_bytes = vec![0u8; token_len];
+        stream.read_exact(&mut token_bytes).await?;
+        let token: zksn_economic::cashu::CashuToken = serde_json::from_slice(&token_bytes)
+            .map_err(|e| anyhow::anyhow!("token deserialize: {e}"))?;
+
+        payment_guard
+            .check(&token)
+            .await
+            .map_err(|e| anyhow::anyhow!("Payment rejected: {e}"))?;
+
+        let mut sphinx_buf = [0u8; PACKET_SIZE];
+        stream.read_exact(&mut sphinx_buf).await?;
+
+        NodeMetrics::global().packets_received.inc();
+        let pkt = SphinxPacket::from_bytes(&sphinx_buf);
+        return route_packet(pkt, own_privkey, own_listen_addr, peers, tx).await;
+    }
+
+    // ── Gossip ────────────────────────────────────────────────────────────────
+    let possible_len = u32::from_le_bytes(peek) as usize;
     if possible_len < 65_536 && possible_len != PACKET_SIZE {
-        // Gossip: prepend the 4 bytes back by handling inline
-        // Re-assemble the stream with a cursor prefix
         let mut payload = vec![0u8; possible_len];
         stream.read_exact(&mut payload).await?;
 
-        // Build a synthetic stream wrapper — use a cursor over the full frame
-        use tokio::io::AsyncReadExt as _;
         let gossip_msg: crate::peers::GossipMsg = bincode::deserialize(&payload)?;
-
-        // Delegate to discovery handler — re-inject full stream
-        // For simplicity we handle the already-read message here
         match gossip_msg {
             crate::peers::GossipMsg::Announce { addr, public_key } => {
                 debug!("Gossip Announce from {addr}");
@@ -162,7 +196,7 @@ async fn handle_conn(
         return Ok(());
     }
 
-    // Sphinx packet: read remaining PACKET_SIZE - 4 bytes
+    // ── Plain Sphinx (testnet / legacy) ───────────────────────────────────────
     let mut rest = vec![0u8; PACKET_SIZE.saturating_sub(4)];
     stream.read_exact(&mut rest).await?;
 
@@ -174,16 +208,21 @@ async fn handle_conn(
 
     let buf_arr: &[u8; PACKET_SIZE] = buf.as_slice().try_into()?;
     let pkt = SphinxPacket::from_bytes(buf_arr);
+    route_packet(pkt, own_privkey, own_listen_addr, peers, tx).await
+}
 
-    // Peel one Sphinx layer
+/// Peel one Sphinx layer then forward or deliver.
+async fn route_packet(
+    pkt: SphinxPacket,
+    own_privkey: &[u8; 32],
+    own_listen_addr: String,
+    peers: Arc<PeerTable>,
+    tx: mpsc::Sender<(String, SphinxPacket)>,
+) -> Result<()> {
     let (next_hop_key, peeled) =
         peel_layer(&pkt, own_privkey).map_err(|e| anyhow::anyhow!("peel_layer: {e}"))?;
 
-    // Resolve next-hop pubkey → TCP address
     if next_hop_key == [0u8; 32] {
-        // This node is the final Sphinx hop.  TCP-deliver the peeled packet to
-        // our own receive listener (same address the node is bound on).
-        // The client's receive.rs peels the final layer and delivers plaintext.
         info!("Final-hop delivery → {own_listen_addr}");
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
@@ -239,33 +278,26 @@ mod tests {
         assert!(MixNode::new(c).await.is_err());
     }
 
-    /// End-to-end final-hop delivery: a Sphinx packet whose route ends at this
-    /// node is TCP-delivered to the registered listen address.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_final_hop_delivers_to_listener() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
         use zksn_crypto::sphinx::{build_packet, peel_layer, NodeIdentity, PACKET_SIZE};
 
-        // Node keypair
         let node_sk = [0x42u8; 32];
         let node_pk: [u8; 32] = X25519PublicKey::from(&StaticSecret::from(node_sk)).to_bytes();
 
-        // Delivery listener — simulates the client receive.rs
         let delivery_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let delivery_addr = delivery_listener.local_addr().unwrap().to_string();
 
-        // Build a 1-hop Sphinx packet addressed to this node
         let route = vec![NodeIdentity {
             public_key: node_pk,
         }];
         let pkt = build_packet(&route, b"hello final hop", &mut rand::thread_rng()).unwrap();
 
-        // Peel — simulates what handle_conn does
         let (next_hop, peeled) = peel_layer(&pkt, &node_sk).unwrap();
-        assert_eq!(next_hop, [0u8; 32], "must be final hop");
+        assert_eq!(next_hop, [0u8; 32]);
 
-        // Invoke the same delivery logic as handle_conn
         let addr = delivery_addr.clone();
         tokio::spawn(async move {
             let buf = peeled.to_bytes();
@@ -273,7 +305,6 @@ mod tests {
             s.write_all(&buf).await.unwrap();
         });
 
-        // Delivery listener must receive exactly PACKET_SIZE bytes
         let (mut stream, _) = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             delivery_listener.accept(),
@@ -285,5 +316,10 @@ mod tests {
         let mut received = vec![0u8; PACKET_SIZE];
         stream.read_exact(&mut received).await.unwrap();
         assert_eq!(received.len(), PACKET_SIZE);
+    }
+
+    #[test]
+    fn test_payment_magic_is_zksn() {
+        assert_eq!(&PAYMENT_MAGIC, b"ZKSN");
     }
 }
