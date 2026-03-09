@@ -393,25 +393,29 @@ mod tests {
         assert!(decoded.is_some());
     }
 
-    /// NUT-00 spec test vector: `hash_to_curve(b"")` must produce a specific
-    /// known point.  Failure here means the algorithm deviates from the spec
-    /// and proofs will be rejected by real Cashu mints.
+    /// NUT-00 spec test vector 1:
+    /// `hash_to_curve([0x00; 32])` must equal the known point from the spec.
+    /// Input is 32 zero bytes — the spec uses fixed-length byte sequences.
     #[test]
-    fn test_hash_to_curve_nut00_vector_empty() {
-        let hex = hex::encode(hash_to_curve(b"").to_encoded_point(true).as_bytes());
+    fn test_hash_to_curve_nut00_vector_32_zeros() {
+        let input = [0u8; 32];
+        let hex = hex::encode(hash_to_curve(&input).to_encoded_point(true).as_bytes());
         assert_eq!(
             hex,
             "0266687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
         );
     }
 
-    /// NUT-00 spec test vector: `hash_to_curve(b"abc")`.
+    /// NUT-00 spec test vector 2:
+    /// `hash_to_curve([0x00; 31] ++ [0x01])` — 31 zero bytes followed by 0x01.
     #[test]
-    fn test_hash_to_curve_nut00_vector_abc() {
-        let hex = hex::encode(hash_to_curve(b"abc").to_encoded_point(true).as_bytes());
+    fn test_hash_to_curve_nut00_vector_31_zeros_one() {
+        let mut input = [0u8; 32];
+        input[31] = 0x01;
+        let hex = hex::encode(hash_to_curve(&input).to_encoded_point(true).as_bytes());
         assert_eq!(
             hex,
-            "02b9f357d9d8f43f3b9eb7de271b9edcd30a4f18dd6665e1c50dcde5ffa01d2d2"
+            "02ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5"
         );
     }
 
