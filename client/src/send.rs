@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time::Duration;
 use tracing::{debug, info};
-use zksn_crypto::sphinx::{build_packet, SphinxPacket, PACKET_SIZE};
+use zksn_crypto::sphinx::{build_packet, SphinxPacket};
 
 /// Maximum message size: PAYLOAD_LEN - 4 bytes for length prefix.
 pub const MAX_MESSAGE_LEN: usize = 1852;
