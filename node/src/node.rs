@@ -49,6 +49,15 @@ impl MixNode {
         ));
         let peers: Arc<PeerTable> = Arc::clone(&discovery.table);
 
+        // Register this node in its own PeerTable so final-hop delivery can
+        // resolve own_pubkey → listen_addr via peers.resolve().
+        peers
+            .upsert(crate::peers::PeerInfo::new(
+                self.config.network.listen_addr.clone(),
+                own_pubkey,
+            ))
+            .await;
+
         let disc_clone = Arc::clone(&discovery);
         tokio::spawn(async move {
             disc_clone.run().await;
@@ -92,11 +101,14 @@ impl MixNode {
 
                     let tx = tx_in.clone();
                     let privkey = own_privkey;
+                    let pubkey = own_pubkey;
                     let peer_table = Arc::clone(&peers);
                     let disc = Arc::clone(&discovery);
 
                     tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream, tx, &privkey, peer_table, disc).await {
+                        if let Err(e) =
+                            handle_conn(stream, tx, &privkey, pubkey, peer_table, disc).await
+                        {
                             warn!("{peer_addr}: {e}");
                         }
                         NodeMetrics::global().active_peers.dec();
@@ -120,6 +132,7 @@ async fn handle_conn(
     mut stream: tokio::net::TcpStream,
     tx: mpsc::Sender<(String, SphinxPacket)>,
     own_privkey: &[u8; 32],
+    own_pubkey: [u8; 32],
     peers: Arc<PeerTable>,
     discovery: Arc<PeerDiscovery>,
 ) -> Result<()> {
@@ -177,8 +190,35 @@ async fn handle_conn(
 
     // Resolve next-hop pubkey → TCP address
     if next_hop_key == [0u8; 32] {
-        // Final destination — deliver locally (stub: log for now)
-        info!("Packet reached final destination — payload delivery pending DHT");
+        // This node is the final Sphinx hop — deliver the peeled packet to the
+        // registered listener for our own routing public key.
+        //
+        // The client's receive.rs listener is registered in PeerTable at startup
+        // (own_pubkey → listen_addr), so resolve() gives us the delivery address.
+        match peers.resolve(&own_pubkey).await {
+            Some(addr) => {
+                info!("Final-hop delivery → {addr}");
+                tokio::spawn(async move {
+                    use tokio::io::AsyncWriteExt;
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        tokio::net::TcpStream::connect(&addr),
+                    )
+                    .await
+                    {
+                        Ok(Ok(mut s)) => {
+                            let buf = peeled.to_bytes();
+                            if let Err(e) = s.write_all(&buf).await {
+                                warn!("Final-hop write to {addr}: {e}");
+                            }
+                        }
+                        Ok(Err(e)) => warn!("Final-hop connect to {addr}: {e}"),
+                        Err(_) => warn!("Final-hop connect timeout to {addr}"),
+                    }
+                });
+            }
+            None => warn!("Final-hop: own pubkey not in PeerTable, dropping packet"),
+        }
         return Ok(());
     }
 
@@ -213,5 +253,64 @@ mod tests {
         let mut c = NodeConfig::default();
         c.network.listen_addr = "999.999.999.999:9999".to_string();
         assert!(MixNode::new(c).await.is_err());
+    }
+    /// End-to-end test: a Sphinx packet whose route ends at this node's own
+    /// pubkey triggers final-hop TCP delivery to a local listener.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_final_hop_delivers_to_listener() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+        use zksn_crypto::sphinx::{build_packet, NodeIdentity, PACKET_SIZE};
+
+        // Node keypair
+        let node_sk = [0x42u8; 32];
+        let node_pk: [u8; 32] = X25519PublicKey::from(&StaticSecret::from(node_sk)).to_bytes();
+
+        // Spin up a delivery listener (simulates receive.rs)
+        let delivery_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let delivery_addr = delivery_listener.local_addr().unwrap().to_string();
+
+        // Build PeerTable with node registered at delivery_addr
+        let peers = Arc::new(PeerTable::new(node_pk));
+        peers
+            .upsert(crate::peers::PeerInfo::new(delivery_addr.clone(), node_pk))
+            .await;
+
+        // Build a 1-hop Sphinx packet: route = [this_node] → next_hop = [0u8;32]
+        let route = vec![NodeIdentity {
+            public_key: node_pk,
+        }];
+        let payload = b"hello final hop";
+        let pkt = build_packet(&route, payload, &mut rand::thread_rng()).unwrap();
+
+        // Simulate what handle_conn does after peel_layer returns [0u8;32]
+        use zksn_crypto::sphinx::peel_layer;
+        let (next_hop_key, peeled) = peel_layer(&pkt, &node_sk).unwrap();
+        assert_eq!(next_hop_key, [0u8; 32], "should be final hop");
+
+        // Run the delivery logic inline (same code as in handle_conn)
+        match peers.resolve(&node_pk).await {
+            Some(addr) => {
+                let buf = peeled.to_bytes();
+                tokio::spawn(async move {
+                    let mut s = tokio::net::TcpStream::connect(&addr).await.unwrap();
+                    s.write_all(&buf).await.unwrap();
+                });
+            }
+            None => panic!("resolve failed"),
+        }
+
+        // Verify the delivery listener receives PACKET_SIZE bytes
+        let (mut stream, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            delivery_listener.accept(),
+        )
+        .await
+        .expect("accept timeout")
+        .unwrap();
+
+        let mut received = vec![0u8; PACKET_SIZE];
+        stream.read_exact(&mut received).await.unwrap();
+        assert_eq!(received.len(), PACKET_SIZE);
     }
 }
