@@ -39,7 +39,6 @@
 use crate::cashu::{CashuError, Proof};
 use k256::{
     elliptic_curve::{
-        group::GroupEncoding,
         ops::MulByGenerator,
         sec1::{FromEncodedPoint, ToEncodedPoint},
         Field,
