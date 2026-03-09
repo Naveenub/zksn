@@ -65,6 +65,11 @@ impl PaymentGuard {
             return Ok(());
         }
 
+        // ── structure check (before value so InvalidToken fires first) ───────
+        if !token.is_valid() {
+            return Err(CashuError::InvalidToken);
+        }
+
         // ── value check ───────────────────────────────────────────────────────
         let total = token.total_value();
         if total < self.min_value {
@@ -72,9 +77,6 @@ impl PaymentGuard {
                 need: self.min_value,
                 have: total,
             });
-        }
-        if !token.is_valid() {
-            return Err(CashuError::InvalidToken);
         }
 
         // ── local double-spend prevention ─────────────────────────────────────
