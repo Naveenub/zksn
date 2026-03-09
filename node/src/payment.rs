@@ -112,7 +112,7 @@ impl PaymentGuard {
 
         // ── record secrets locally ────────────────────────────────────────────
         {
-            let seen = self.seen_secrets.lock().await;
+            let mut seen = self.seen_secrets.lock().await;
             for s in secrets {
                 seen.insert(s);
             }
