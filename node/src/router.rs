@@ -5,7 +5,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 use tracing::{debug, warn};
-use zksn_crypto::sphinx::{SphinxPacket, PACKET_SIZE};
+use zksn_crypto::sphinx::SphinxPacket;
 
 pub struct PacketRouter {
     rx: mpsc::Receiver<(String, SphinxPacket)>,
