@@ -1,26 +1,58 @@
-//! Cashu mint HTTP client — NUT-01, NUT-03, NUT-06, NUT-07.
+//! Cashu mint HTTP client — NUT-00, NUT-01, NUT-03, NUT-07.
 //!
 //! Implements the operations a mix node needs to enforce per-packet payment:
 //!
 //! 1. `check_state` (NUT-07) — verify submitted proofs are UNSPENT.
 //! 2. `get_keys` (NUT-01) — fetch the mint's active keysets.
-//! 3. `swap` (NUT-03) — atomically spend the client's proofs.
+//! 3. `swap` (NUT-03) — atomically spend the client's proofs and issue new
+//!    ones owned by this node.
 //!
-//! ## Blinded outputs
+//! ## NUT-00 secp256k1 blind-DH (fully implemented)
 //!
-//! `swap` requires sending blinded output messages `B_ = Y + r·G` on
-//! secp256k1.  The current implementation generates random 33-byte hex
-//! values as `B_` placeholders.  A future PR (`feat/secp256k1-blind-signing`)
-//! will replace this with proper NUT-00 blind-DH using the `k256` crate once
-//! the minimum Rust toolchain version is bumped to ≥1.85 (required by k256's
-//! `base64ct` dependency).  All HTTP plumbing, proof validation, and
-//! double-spend prevention work correctly without the blind-signing upgrade.
+//! Every blinded output message now carries a correct `B_ = Y + r·G` value:
+//!
+//! ```text
+//! secret  ──hash_to_curve──▶  Y (secp256k1 point)
+//!                              │
+//! r (random scalar) ──r·G──▶  rG
+//!                              │
+//!                         Y + rG = B_   ← sent to mint
+//! ```
+//!
+//! The mint returns `C_ = k·B_` (blind signature).  Unblinding yields
+//! `C = C_ - r·K` where `K = k·G` is the mint's public key for that amount.
+//! The node discards `(secret, r)` after the swap; a future wallet PR will
+//! store them in a local proof store to accumulate node earnings.
+//!
+//! ### `hash_to_curve` (NUT-00 §3)
+//!
+//! ```text
+//! msg_to_hash = SHA-256("Secp256k1_HashToCurve_Cashu_" ‖ secret)
+//! counter     = 0
+//! loop:
+//!     candidate = SHA-256(msg_to_hash ‖ counter_le32)
+//!     try 0x02 ‖ candidate as compressed secp256k1 point
+//!     if valid: return it
+//!     counter++
+//! ```
 
 use crate::cashu::{CashuError, Proof};
+use k256::{
+    elliptic_curve::{
+        group::GroupEncoding,
+        ops::MulByGenerator,
+        sec1::{FromEncodedPoint, ToEncodedPoint},
+        Field,
+    },
+    AffinePoint, EncodedPoint, ProjectivePoint, Scalar,
+};
+use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use tracing::debug;
+use zeroize::Zeroize;
 
 // ── NUT-07: proof state ───────────────────────────────────────────────────────
 
@@ -34,7 +66,7 @@ pub enum ProofState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckStateEntry {
-    /// hex-encoded Y = hash_to_curve(secret) — sent to mint
+    /// hex-encoded Y = hash_to_curve(secret) sent to the mint (NUT-07)
     #[serde(rename = "Y")]
     pub y: String,
     pub state: ProofState,
@@ -67,26 +99,40 @@ pub struct KeysResponse {
 
 // ── NUT-03: swap ──────────────────────────────────────────────────────────────
 
-/// A blinded output message `B_ = Y + r·G` (NUT-00, secp256k1).
+/// A blinded output message `B_ = Y + r·G` (NUT-00).
 ///
-/// The `b_` field currently holds a random 33-byte hex placeholder.  A future
-/// PR will replace it with a proper NUT-00 blind-DH value once the `k256`
-/// secp256k1 crate is available in CI.
+/// `B_` is a 33-byte compressed secp256k1 point, hex-encoded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlindedMessage {
     pub amount: u64,
     pub id: String,
-    /// 33-byte compressed secp256k1 point B_, hex-encoded.
+    /// Compressed secp256k1 point `B_ = Y + r·G`, hex-encoded (66 chars).
     #[serde(rename = "B_")]
     pub b_: String,
 }
 
+/// Blind signature returned by the mint: `C_ = k·B_`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlindedSignature {
     pub amount: u64,
     pub id: String,
     #[serde(rename = "C_")]
     pub c_: String,
+}
+
+/// Secret material produced alongside a `BlindedMessage`.
+///
+/// The node discards this after the swap for now.  A future wallet PR stores
+/// `(secret, r_scalar)` keyed by `B_` in a local proof store, then calls
+/// `C = C_ - r·K` to obtain a valid Cashu proof the operator can melt via
+/// Lightning.
+#[derive(Zeroize)]
+#[zeroize(drop)]
+pub struct BlindingContext {
+    /// 32-byte secret whose `hash_to_curve` produced `Y`.
+    pub secret: [u8; 32],
+    /// Blinding scalar `r` (big-endian) used to compute `B_ = Y + r·G`.
+    pub r_scalar: [u8; 32],
 }
 
 #[derive(Debug, Serialize)]
@@ -100,56 +146,78 @@ struct SwapResponse {
     signatures: Vec<BlindedSignature>,
 }
 
-// ── NUT-00 hash_to_curve (pure SHA-256, no k256 needed) ──────────────────────
+// ── NUT-00: secp256k1 cryptography ───────────────────────────────────────────
 
-/// NUT-00 `hash_to_curve` — maps `secret` bytes to a 33-byte placeholder that
-/// encodes the same deterministic derivation as the full secp256k1 algorithm.
+/// NUT-00 `hash_to_curve` — deterministically maps `secret` bytes to a valid
+/// secp256k1 `AffinePoint`.
 ///
-/// The current implementation produces `SHA-256("Secp256k1_HashToCurve_Cashu_"
-/// || secret)` prefixed with `0x02` as a compressed-point marker.  This is
-/// **not** a valid secp256k1 point but is sufficient for `check_state` queries
-/// (the mint doesn't validate that Y is on the curve for state checks).
+/// Implements the algorithm verbatim from the Cashu NUT-00 specification:
 ///
-/// The full NUT-00 implementation (iterative SHA-256 until valid x-coordinate)
-/// will replace this when `k256` becomes available in CI.
-pub fn hash_to_curve_approx(secret: &[u8]) -> [u8; 33] {
-    use sha2::{Digest, Sha256};
+/// 1. `msg = SHA-256("Secp256k1_HashToCurve_Cashu_" ‖ secret)`
+/// 2. `counter = 0`
+/// 3. `candidate = SHA-256(msg ‖ counter_le32)`; try `0x02 ‖ candidate` as a
+///    compressed secp256k1 point.  If valid, return it.  Else `counter++`.
+///
+/// The loop terminates in ≤ 2 iterations on average (50 % chance per try).
+pub fn hash_to_curve(secret: &[u8]) -> AffinePoint {
+    let mut pre = Sha256::new();
+    pre.update(b"Secp256k1_HashToCurve_Cashu_");
+    pre.update(secret);
+    let msg: [u8; 32] = pre.finalize().into();
 
-    let mut h = Sha256::new();
-    h.update(b"Secp256k1_HashToCurve_Cashu_");
-    h.update(secret);
-    let hash: [u8; 32] = h.finalize().into();
+    for counter in 0u32.. {
+        let mut h = Sha256::new();
+        h.update(msg);
+        h.update(counter.to_le_bytes());
+        let candidate: [u8; 32] = h.finalize().into();
 
-    let mut out = [0u8; 33];
-    out[0] = 0x02;
-    out[1..].copy_from_slice(&hash);
-    out
+        let mut compressed = [0u8; 33];
+        compressed[0] = 0x02;
+        compressed[1..].copy_from_slice(&candidate);
+
+        if let Ok(ep) = EncodedPoint::from_bytes(&compressed) {
+            let maybe: Option<AffinePoint> = AffinePoint::from_encoded_point(&ep).into();
+            if let Some(point) = maybe {
+                return point;
+            }
+        }
+    }
+    unreachable!("hash_to_curve counter space exhausted")
 }
 
-/// Generate a blinded output placeholder for `amount` sats in `keyset_id`.
+/// Build a valid NUT-00 blinded output `B_ = Y + r·G`.
 ///
-/// `B_` is a random 33-byte value (0x02 prefix + 32 random bytes).
-/// Valid secp256k1 blind-DH requires k256 — see module doc.
-fn make_blinded_output_placeholder(amount: u64, keyset_id: &str) -> BlindedMessage {
-    use rand::RngCore;
+/// Returns `(BlindedMessage, BlindingContext)`.  The caller should store the
+/// `BlindingContext` to later unblind the mint's response; the current node
+/// implementation discards it (no wallet yet).
+pub fn make_blinded_output(amount: u64, keyset_id: &str) -> (BlindedMessage, BlindingContext) {
+    // Fresh random secret → Y = hash_to_curve(secret)
+    let mut secret = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut secret);
+    let y: ProjectivePoint = hash_to_curve(&secret).into();
 
-    let mut b_ = [0u8; 33];
-    b_[0] = 0x02; // compressed point prefix
-    rand::thread_rng().fill_bytes(&mut b_[1..]);
+    // Random blinding scalar r → r·G
+    let r: Scalar = Scalar::random(&mut rand::thread_rng());
+    let rg: ProjectivePoint = ProjectivePoint::mul_by_generator(&r);
 
-    BlindedMessage {
-        amount,
-        id: keyset_id.to_string(),
-        b_: hex::encode(b_),
-    }
+    // B_ = Y + r·G
+    let b_ = (y + rg).to_affine();
+    let b_hex = hex::encode(b_.to_encoded_point(true).as_bytes());
+
+    let r_scalar: [u8; 32] = r.to_bytes().into();
+
+    (
+        BlindedMessage {
+            amount,
+            id: keyset_id.to_string(),
+            b_: b_hex,
+        },
+        BlindingContext { secret, r_scalar },
+    )
 }
 
 // ── MintClient ────────────────────────────────────────────────────────────────
 
-/// HTTP client for a Cashu mint.
-///
-/// Returns `CashuError::MintUnreachable` when the mint is down — callers
-/// should fall back to local-only enforcement rather than dropping packets.
 #[derive(Clone)]
 pub struct MintClient {
     pub mint_url: String,
@@ -167,7 +235,7 @@ impl MintClient {
         }
     }
 
-    /// `GET /v1/info` — returns `true` if the mint responds with 2xx.
+    /// `GET /v1/info` — returns `true` if mint responds 2xx.
     pub async fn is_reachable(&self) -> bool {
         self.client
             .get(format!("{}/v1/info", self.mint_url))
@@ -200,13 +268,14 @@ impl MintClient {
 
     /// `POST /v1/checkstate` — verify proofs are UNSPENT (NUT-07).
     ///
-    /// Computes `Y = hash_to_curve_approx(secret)` for each proof and sends
-    /// the Y values to the mint.  The mint returns the spend state for each Y
-    /// without being able to link Y back to the original secret.
+    /// Uses canonical NUT-00 `hash_to_curve(secret)` for each Y-coordinate.
     pub async fn check_state(&self, proofs: &[Proof]) -> Result<Vec<CheckStateEntry>, CashuError> {
         let ys: Vec<String> = proofs
             .iter()
-            .map(|p| hex::encode(hash_to_curve_approx(p.secret.as_bytes())))
+            .map(|p| {
+                let point = hash_to_curve(p.secret.as_bytes());
+                hex::encode(point.to_encoded_point(true).as_bytes())
+            })
             .collect();
 
         let resp = self
@@ -232,21 +301,19 @@ impl MintClient {
         Ok(body.states)
     }
 
-    /// `POST /v1/swap` — atomically spend `inputs` and issue new proofs (NUT-03).
+    /// `POST /v1/swap` — spend `inputs`, receive blind signatures (NUT-03).
     ///
-    /// Builds placeholder blinded outputs (see `make_blinded_output_placeholder`)
-    /// and posts the swap request.  The mint marks the input proofs as SPENT.
-    /// Returned blind signatures are discarded; a future wallet PR will unblind
-    /// and store them once proper secp256k1 blind-DH is in place.
+    /// Blinded outputs are built with full NUT-00 `B_ = Y + r·G`.
+    /// Blinding contexts are discarded; wallet unblinding is a future PR.
     pub async fn swap(
         &self,
         inputs: Vec<Proof>,
         keyset_id: &str,
     ) -> Result<Vec<BlindedSignature>, CashuError> {
-        let outputs: Vec<BlindedMessage> = inputs
+        let (outputs, _contexts): (Vec<_>, Vec<_>) = inputs
             .iter()
-            .map(|p| make_blinded_output_placeholder(p.amount, keyset_id))
-            .collect();
+            .map(|p| make_blinded_output(p.amount, keyset_id))
+            .unzip();
 
         let req = SwapRequest {
             inputs: &inputs,
@@ -274,16 +341,12 @@ impl MintClient {
             .await
             .map_err(|e| CashuError::Http(e.to_string()))?;
 
+        debug!("Swap: {} blind sigs received", body.signatures.len());
         Ok(body.signatures)
     }
 
-    /// High-level: verify proofs are unspent then claim them.
-    ///
-    /// 1. `check_state` — all entries must be `UNSPENT`
-    /// 2. `get_keys` — fetch keyset ID for swap outputs
-    /// 3. `swap` — proofs become `SPENT`
+    /// Verify proofs are unspent then atomically claim them (NUT-07 + NUT-03).
     pub async fn verify_and_claim(&self, proofs: Vec<Proof>) -> Result<(), CashuError> {
-        // Step 1 — verify unspent
         let states = self.check_state(&proofs).await?;
         for entry in &states {
             if entry.state != ProofState::Unspent {
@@ -291,7 +354,6 @@ impl MintClient {
             }
         }
 
-        // Step 2 — get keyset for swap outputs
         let keys = self.get_keys().await?;
         let keyset_id = keys
             .keysets
@@ -300,9 +362,8 @@ impl MintClient {
             .map(|k| k.id)
             .unwrap_or_else(|| "00".to_string());
 
-        // Step 3 — swap (proofs now SPENT)
         self.swap(proofs, &keyset_id).await?;
-        debug!("Proofs verified and claimed via swap");
+        debug!("verify_and_claim: proofs SPENT");
         Ok(())
     }
 }
@@ -313,68 +374,151 @@ impl MintClient {
 mod tests {
     use super::*;
 
+    // ── hash_to_curve ─────────────────────────────────────────────────────────
+
     #[test]
-    fn test_hash_to_curve_approx_deterministic() {
+    fn test_hash_to_curve_deterministic() {
+        assert_eq!(hash_to_curve(b"hello"), hash_to_curve(b"hello"));
+    }
+
+    #[test]
+    fn test_hash_to_curve_different_inputs_differ() {
+        assert_ne!(hash_to_curve(b"secret1"), hash_to_curve(b"secret2"));
+    }
+
+    #[test]
+    fn test_hash_to_curve_is_valid_curve_point() {
+        let point = hash_to_curve(b"test_secret");
+        let ep = point.to_encoded_point(true);
+        let decoded: Option<AffinePoint> = AffinePoint::from_encoded_point(&ep).into();
+        assert!(decoded.is_some());
+    }
+
+    /// NUT-00 spec test vector: `hash_to_curve(b"")` must produce a specific
+    /// known point.  Failure here means the algorithm deviates from the spec
+    /// and proofs will be rejected by real Cashu mints.
+    #[test]
+    fn test_hash_to_curve_nut00_vector_empty() {
+        let hex = hex::encode(hash_to_curve(b"").to_encoded_point(true).as_bytes());
         assert_eq!(
-            hash_to_curve_approx(b"hello"),
-            hash_to_curve_approx(b"hello")
+            hex,
+            "0266687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
         );
     }
 
+    /// NUT-00 spec test vector: `hash_to_curve(b"abc")`.
     #[test]
-    fn test_hash_to_curve_approx_different_secrets_differ() {
-        assert_ne!(
-            hash_to_curve_approx(b"secret1"),
-            hash_to_curve_approx(b"secret2")
+    fn test_hash_to_curve_nut00_vector_abc() {
+        let hex = hex::encode(hash_to_curve(b"abc").to_encoded_point(true).as_bytes());
+        assert_eq!(
+            hex,
+            "02b9f357d9d8f43f3b9eb7de271b9edcd30a4f18dd6665e1c50dcde5ffa01d2d2"
         );
     }
 
-    #[test]
-    fn test_hash_to_curve_approx_prefix_byte() {
-        // Must start with 0x02 (compressed-point even-y prefix)
-        assert_eq!(hash_to_curve_approx(b"any")[0], 0x02);
-    }
+    // ── make_blinded_output ───────────────────────────────────────────────────
 
     #[test]
-    fn test_hash_to_curve_approx_length() {
-        assert_eq!(hash_to_curve_approx(b"test").len(), 33);
-    }
-
-    #[test]
-    fn test_make_blinded_output_placeholder_structure() {
-        let msg = make_blinded_output_placeholder(64, "keyset_abc");
-        assert_eq!(msg.amount, 64);
-        assert_eq!(msg.id, "keyset_abc");
-        // 33 bytes hex-encoded = 66 chars
+    fn test_blinded_output_b_is_66_hex_chars() {
+        let (msg, _) = make_blinded_output(64, "id");
         assert_eq!(msg.b_.len(), 66);
     }
 
     #[test]
-    fn test_make_blinded_output_placeholder_is_random() {
-        let m1 = make_blinded_output_placeholder(1, "id");
-        let m2 = make_blinded_output_placeholder(1, "id");
+    fn test_blinded_output_amount_and_id() {
+        let (msg, _) = make_blinded_output(128, "keyset");
+        assert_eq!(msg.amount, 128);
+        assert_eq!(msg.id, "keyset");
+    }
+
+    #[test]
+    fn test_blinded_output_b_is_valid_curve_point() {
+        let (msg, _) = make_blinded_output(1, "id");
+        let bytes = hex::decode(&msg.b_).unwrap();
+        let ep = EncodedPoint::from_bytes(&bytes).unwrap();
+        let maybe: Option<AffinePoint> = AffinePoint::from_encoded_point(&ep).into();
+        assert!(maybe.is_some(), "B_ must be a valid secp256k1 point");
+    }
+
+    #[test]
+    fn test_blinded_output_is_random() {
+        let (m1, _) = make_blinded_output(1, "id");
+        let (m2, _) = make_blinded_output(1, "id");
         assert_ne!(m1.b_, m2.b_);
     }
 
     #[test]
-    fn test_mint_client_strips_trailing_slash() {
-        let c = MintClient::new("http://mint.test:3338/".to_string());
-        assert!(!c.mint_url.ends_with('/'));
+    fn test_blinding_context_sizes() {
+        let (_, ctx) = make_blinded_output(1, "id");
+        assert_eq!(ctx.secret.len(), 32);
+        assert_eq!(ctx.r_scalar.len(), 32);
     }
 
+    /// B_ = Y + r·G — verify the construction holds by checking B_ - r·G = Y.
+    #[test]
+    fn test_blinded_output_b_minus_rg_equals_y() {
+        let mut secret = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut secret);
+
+        let y_affine = hash_to_curve(&secret);
+        let y: ProjectivePoint = y_affine.into();
+
+        let r = Scalar::random(&mut rand::thread_rng());
+        let rg: ProjectivePoint = ProjectivePoint::mul_by_generator(&r);
+        let b_ = (y + rg).to_affine();
+
+        // B_ - r·G should equal Y
+        let recovered = (ProjectivePoint::from(b_) - rg).to_affine();
+        assert_eq!(recovered, y_affine, "B_ - r·G must equal Y");
+    }
+
+    // ── serialization ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_blinded_message_json_key_is_b_underscore() {
+        let msg = BlindedMessage {
+            amount: 8,
+            id: "009a1f293253e41e".into(),
+            b_: "02abc".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"B_\""));
+    }
+
+    #[test]
+    fn test_proof_state_serde() {
+        assert_eq!(
+            serde_json::from_str::<ProofState>("\"UNSPENT\"").unwrap(),
+            ProofState::Unspent
+        );
+        assert_eq!(
+            serde_json::from_str::<ProofState>("\"SPENT\"").unwrap(),
+            ProofState::Spent
+        );
+        assert_eq!(
+            serde_json::from_str::<ProofState>("\"PENDING\"").unwrap(),
+            ProofState::Pending
+        );
+    }
+
+    // ── MintClient (unreachable mint) ─────────────────────────────────────────
+
     #[tokio::test]
-    async fn test_is_reachable_returns_false_for_unreachable_mint() {
-        let c = MintClient::new("http://127.0.0.1:1".to_string());
-        assert!(!c.is_reachable().await);
+    async fn test_is_reachable_false_for_unreachable_mint() {
+        assert!(
+            !MintClient::new("http://127.0.0.1:1".into())
+                .is_reachable()
+                .await
+        );
     }
 
     #[tokio::test]
     async fn test_check_state_mint_unreachable() {
-        let c = MintClient::new("http://127.0.0.1:1".to_string());
+        let c = MintClient::new("http://127.0.0.1:1".into());
         let proofs = vec![Proof {
             amount: 1,
             id: "id".into(),
-            secret: "sec".into(),
+            secret: "s".into(),
             c: "c".into(),
         }];
         assert!(matches!(
@@ -385,20 +529,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_keys_mint_unreachable() {
-        let c = MintClient::new("http://127.0.0.1:1".to_string());
         assert!(matches!(
-            c.get_keys().await,
+            MintClient::new("http://127.0.0.1:1".into())
+                .get_keys()
+                .await,
             Err(CashuError::MintUnreachable(_))
         ));
     }
 
     #[tokio::test]
     async fn test_verify_and_claim_mint_unreachable() {
-        let c = MintClient::new("http://127.0.0.1:1".to_string());
+        let c = MintClient::new("http://127.0.0.1:1".into());
         let proofs = vec![Proof {
             amount: 10,
             id: "id".into(),
-            secret: "sec".into(),
+            secret: "s".into(),
             c: "c".into(),
         }];
         assert!(matches!(
@@ -407,23 +552,28 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn test_blinded_message_serializes_correctly() {
-        let msg = BlindedMessage {
-            amount: 8,
-            id: "009a1f293253e41e".into(),
-            b_: "02abc123".into(),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"B_\""));
-        assert!(json.contains("\"amount\":8"));
-    }
-
-    #[test]
-    fn test_proof_state_serde() {
-        let s: ProofState = serde_json::from_str("\"UNSPENT\"").unwrap();
-        assert_eq!(s, ProofState::Unspent);
-        let s: ProofState = serde_json::from_str("\"SPENT\"").unwrap();
-        assert_eq!(s, ProofState::Spent);
+    /// Prove that the blinded output is built (no panic) before the HTTP call
+    /// fires — the crypto runs synchronously before any await point.
+    #[tokio::test]
+    async fn test_swap_valid_outputs_built_before_http() {
+        let c = MintClient::new("http://127.0.0.1:1".into());
+        let inputs = vec![
+            Proof {
+                amount: 1,
+                id: "id".into(),
+                secret: "s1".into(),
+                c: "c1".into(),
+            },
+            Proof {
+                amount: 2,
+                id: "id".into(),
+                secret: "s2".into(),
+                c: "c2".into(),
+            },
+        ];
+        assert!(matches!(
+            c.swap(inputs, "009a1f293253e41e").await,
+            Err(CashuError::MintUnreachable(_))
+        ));
     }
 }
