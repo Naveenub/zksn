@@ -82,7 +82,7 @@ impl PaymentGuard {
         // ── local double-spend prevention ─────────────────────────────────────
         let secrets: Vec<String> = token.proofs.iter().map(|p| p.secret.clone()).collect();
         {
-            let mut seen = self.seen_secrets.lock().await;
+            let seen = self.seen_secrets.lock().await;
             for s in &secrets {
                 if seen.contains(s) {
                     warn!("Double-spend attempt: proof secret already seen");
@@ -112,7 +112,7 @@ impl PaymentGuard {
 
         // ── record secrets locally ────────────────────────────────────────────
         {
-            let mut seen = self.seen_secrets.lock().await;
+            let seen = self.seen_secrets.lock().await;
             for s in secrets {
                 seen.insert(s);
             }
