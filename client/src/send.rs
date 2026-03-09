@@ -150,3 +150,152 @@ mod tests {
         assert!(unframe_payload(&buf).is_err());
     }
 }
+
+// ── Payment-wrapped send ──────────────────────────────────────────────────────
+
+/// Send `payload` through the mixnet with a Cashu `PaymentEnvelope`.
+///
+/// Wire format written to the entry node's TCP stream:
+/// ```text
+/// [4 bytes: b"ZKSN"]
+/// [4 bytes: u32 LE token_json_len]
+/// [token_json_len bytes: CashuToken JSON]
+/// [PACKET_SIZE bytes: Sphinx packet]
+/// ```
+///
+/// Use this in mainnet mode.  `send_message` (no token) is for testnet only.
+pub async fn send_message_with_payment(
+    selector: &RouteSelector,
+    recipient_pubkey: [u8; 32],
+    payload: &[u8],
+    hop_count: usize,
+    token: &zksn_economic::cashu::CashuToken,
+) -> Result<()> {
+    if payload.len() > MAX_MESSAGE_LEN {
+        return Err(anyhow!(
+            "Message too large: {} bytes (max {MAX_MESSAGE_LEN})",
+            payload.len()
+        ));
+    }
+
+    let (route, entry_addr) = selector.build_route(hop_count, recipient_pubkey).await?;
+    let framed = frame_payload(payload)?;
+    let pkt = build_packet(&route, &framed, &mut rand::thread_rng())
+        .map_err(|e| anyhow!("Sphinx build_packet: {e:?}"))?;
+
+    inject_packet_with_payment(&entry_addr, &pkt, token).await?;
+
+    info!(
+        "Sent {} bytes (payment attached) → {} hops → entry {}",
+        payload.len(),
+        route.len(),
+        entry_addr
+    );
+    Ok(())
+}
+
+/// Write a `PaymentEnvelope` frame to `addr`.
+async fn inject_packet_with_payment(
+    addr: &str,
+    pkt: &SphinxPacket,
+    token: &zksn_economic::cashu::CashuToken,
+) -> Result<()> {
+    use zksn_node::node::PAYMENT_MAGIC;
+
+    let token_json = serde_json::to_vec(token)?;
+    let token_len = token_json.len() as u32;
+
+    let mut stream = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow!("Connection timeout to {addr}"))??;
+
+    stream.write_all(&PAYMENT_MAGIC).await?;
+    stream.write_all(&token_len.to_le_bytes()).await?;
+    stream.write_all(&token_json).await?;
+    stream.write_all(&pkt.to_bytes()).await?;
+    stream.flush().await?;
+
+    debug!("Injected PaymentEnvelope → {addr}");
+    Ok(())
+}
+
+#[cfg(test)]
+mod payment_tests {
+    use super::*;
+    use zksn_economic::cashu::{CashuToken, Proof};
+
+    fn make_token() -> CashuToken {
+        CashuToken {
+            mint: "http://mint.test:3338".into(),
+            proofs: vec![Proof {
+                amount: 1,
+                id: "id1".into(),
+                secret: "s1".into(),
+                c: "c1".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_payment_envelope_token_serializes() {
+        let t = make_token();
+        let json = serde_json::to_vec(&t).unwrap();
+        let rt: CashuToken = serde_json::from_slice(&json).unwrap();
+        assert_eq!(rt.total_value(), 1);
+    }
+
+    #[test]
+    fn test_payment_envelope_magic_bytes() {
+        use zksn_node::node::PAYMENT_MAGIC;
+        assert_eq!(&PAYMENT_MAGIC, b"ZKSN");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_inject_packet_with_payment_roundtrip() {
+        use tokio::io::AsyncReadExt;
+        use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+        use zksn_crypto::sphinx::{build_packet, NodeIdentity, PACKET_SIZE};
+        use zksn_node::node::PAYMENT_MAGIC;
+
+        let sk = [0x11u8; 32];
+        let pk: [u8; 32] = X25519PublicKey::from(&StaticSecret::from(sk)).to_bytes();
+        let route = vec![NodeIdentity { public_key: pk }];
+        let pkt = build_packet(&route, b"pay me", &mut rand::thread_rng()).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+
+        let token = make_token();
+        let pkt_c = pkt.clone();
+        let addr_c = addr.clone();
+        let tok_c = token.clone();
+        tokio::spawn(async move {
+            inject_packet_with_payment(&addr_c, &pkt_c, &tok_c)
+                .await
+                .unwrap();
+        });
+
+        let (mut s, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut magic = [0u8; 4];
+        s.read_exact(&mut magic).await.unwrap();
+        assert_eq!(magic, PAYMENT_MAGIC);
+
+        let mut len_buf = [0u8; 4];
+        s.read_exact(&mut len_buf).await.unwrap();
+        let token_len = u32::from_le_bytes(len_buf) as usize;
+        assert!(token_len > 0);
+
+        let mut token_bytes = vec![0u8; token_len];
+        s.read_exact(&mut token_bytes).await.unwrap();
+        let rt: CashuToken = serde_json::from_slice(&token_bytes).unwrap();
+        assert_eq!(rt.total_value(), 1);
+
+        let mut sphinx = vec![0u8; PACKET_SIZE];
+        s.read_exact(&mut sphinx).await.unwrap();
+        assert_eq!(sphinx, pkt.to_bytes());
+    }
+}
