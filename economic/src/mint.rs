@@ -393,26 +393,30 @@ mod tests {
         assert!(decoded.is_some());
     }
 
-    /// NUT-00 spec test vector 1:
-    /// `hash_to_curve([0x00; 32])` must equal the known point from the spec.
-    /// Input is 32 zero bytes — the spec uses fixed-length byte sequences.
+    /// NUT-00 spec test vector 1.
+    ///
+    /// Cashu secrets are *strings*.  The spec vector uses the 64-char ASCII
+    /// hex string `"0000...0000"` as the secret, not 32 raw zero bytes.
+    /// Source: https://github.com/cashubtc/nuts/blob/main/00.md#test-vectors
     #[test]
-    fn test_hash_to_curve_nut00_vector_32_zeros() {
-        let input = [0u8; 32];
-        let hex = hex::encode(hash_to_curve(&input).to_encoded_point(true).as_bytes());
+    fn test_hash_to_curve_nut00_vector_1() {
+        // secret = "0000000000000000000000000000000000000000000000000000000000000000"
+        let secret = b"0000000000000000000000000000000000000000000000000000000000000000";
+        let hex = hex::encode(hash_to_curve(secret).to_encoded_point(true).as_bytes());
         assert_eq!(
             hex,
             "0266687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
         );
     }
 
-    /// NUT-00 spec test vector 2:
-    /// `hash_to_curve([0x00; 31] ++ [0x01])` — 31 zero bytes followed by 0x01.
+    /// NUT-00 spec test vector 2.
+    ///
+    /// Secret is the 64-char ASCII hex string ending in `"1"`.
     #[test]
-    fn test_hash_to_curve_nut00_vector_31_zeros_one() {
-        let mut input = [0u8; 32];
-        input[31] = 0x01;
-        let hex = hex::encode(hash_to_curve(&input).to_encoded_point(true).as_bytes());
+    fn test_hash_to_curve_nut00_vector_2() {
+        // secret = "0000000000000000000000000000000000000000000000000000000000000001"
+        let secret = b"0000000000000000000000000000000000000000000000000000000000000001";
+        let hex = hex::encode(hash_to_curve(secret).to_encoded_point(true).as_bytes());
         assert_eq!(
             hex,
             "02ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5"
