@@ -18,7 +18,6 @@ description  = "Zero-Knowledge Sovereign Network — metadata-resistant P2P netw
 tokio              = { version = "1",    features = ["full"] }
 ed25519-dalek      = { version = "2",    features = ["rand_core"] }
 x25519-dalek       = { version = "2",    features = ["static_secrets"] }
-curve25519-dalek   = { version = "4" }
 snow               = "0.9"
 sha2               = "0.10"
 chacha20poly1305   = "0.10"
