@@ -16,6 +16,8 @@ pub enum CashuError {
     AlreadySpent,
     #[error("Serialization: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("HTTP error: {0}")]
+    Http(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
