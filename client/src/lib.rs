@@ -158,11 +158,6 @@ mod tests {
     #[tokio::test]
     async fn test_send_fails_without_peers() {
         let config = ClientConfig {
-            bootstrap_peers: vec![],
-            ..Default::default()
-        };
-        // Give entry_node a blank key so it won't be usable for sphinx
-        let config = ClientConfig {
             entry_node: "127.0.0.1:19999".to_string(),
             bootstrap_peers: vec![],
             ..Default::default()
