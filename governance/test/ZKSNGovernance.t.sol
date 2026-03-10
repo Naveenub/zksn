@@ -257,50 +257,49 @@ contract ZKSNGovernanceTest is Test {
      *   signals[2] = voteYes ? 1 : 0
      *   signals[3] = membershipRoot
      *
-     * We use a SignalCaptureVerifier that stores signals in a public mapping
-     * via a separate `record()` call pattern, keeping verifyProof as `view`
-     * while allowing a companion `capture()` call to store results.
-     *
-     * Approach: deploy a PassthroughVerifier (always returns true, no state),
-     * call castVote, then read signals directly from ZKSNGovernance events via
-     * vm.recordLogs().  The VoteCast event fires only after the proof check
-     * passes so we can infer the signals were correct.  We verify the signal
-     * values by re-computing them independently and asserting they match.
+     * Uses vm.expectCall to assert the exact calldata sent to the verifier,
+     * including the signal array layout.  No custom verifier needed.
      */
     function test_SignalLayout_MatchesCircuit() public {
-        PassthroughVerifier pass = new PassthroughVerifier();
-        ZKSNGovernance captureGov = new ZKSNGovernance(address(pass), ROOT);
+        MockVerifier mv = new MockVerifier();
+        ZKSNGovernance captureGov = new ZKSNGovernance(address(mv), ROOT);
 
         bytes32 id            = captureGov.createProposal(keccak256("p"), address(0), "");
         bytes32 nullifierHash = keccak256("my_nullifier");
+        bytes  memory proof   = hex"aabbccdd";
 
-        // Independently compute what signals[0..3] should be
-        uint256 expS0 = uint256(nullifierHash);
-        uint256 expS1 = uint256(id);
-        uint256 expS2 = 1; // voteYes = true
-        uint256 expS3 = uint256(ROOT);
+        uint256[4] memory expectedSignals;
+        expectedSignals[0] = uint256(nullifierHash); // signals[0] = nullifierHash
+        expectedSignals[1] = uint256(id);            // signals[1] = proposalId
+        expectedSignals[2] = uint256(1);             // signals[2] = 1 (voteYes=true)
+        expectedSignals[3] = uint256(ROOT);          // signals[3] = membershipRoot
 
-        // Record signals via the capture verifier's public getter
-        pass.startCapture();
-        captureGov.castVote(id, nullifierHash, true, hex"aabbccdd");
-
-        assertEq(pass.capturedSignal(0), expS0, "signals[0] must be nullifierHash");
-        assertEq(pass.capturedSignal(1), expS1, "signals[1] must be proposalId");
-        assertEq(pass.capturedSignal(2), expS2, "signals[2] must be 1 for voteYes=true");
-        assertEq(pass.capturedSignal(3), expS3, "signals[3] must be membershipRoot");
+        vm.expectCall(
+            address(mv),
+            abi.encodeCall(IVerifier.verifyProof, (proof, expectedSignals))
+        );
+        captureGov.castVote(id, nullifierHash, true, proof);
     }
 
     function test_SignalLayout_VoteNoIsZero() public {
-        PassthroughVerifier pass = new PassthroughVerifier();
-        ZKSNGovernance captureGov = new ZKSNGovernance(address(pass), ROOT);
+        MockVerifier mv = new MockVerifier();
+        ZKSNGovernance captureGov = new ZKSNGovernance(address(mv), ROOT);
 
         bytes32 id            = captureGov.createProposal(keccak256("p"), address(0), "");
         bytes32 nullifierHash = keccak256("voter_no");
+        bytes  memory proof   = hex"aabb";
 
-        pass.startCapture();
-        captureGov.castVote(id, nullifierHash, false, hex"aabb");
+        uint256[4] memory expectedSignals;
+        expectedSignals[0] = uint256(nullifierHash);
+        expectedSignals[1] = uint256(id);
+        expectedSignals[2] = uint256(0);    // signals[2] = 0 (voteYes=false)
+        expectedSignals[3] = uint256(ROOT);
 
-        assertEq(pass.capturedSignal(2), uint256(0), "signals[2] must be 0 for voteYes=false");
+        vm.expectCall(
+            address(mv),
+            abi.encodeCall(IVerifier.verifyProof, (proof, expectedSignals))
+        );
+        captureGov.castVote(id, nullifierHash, false, proof);
     }
 
     // ── 4. Deployment — Groth16Verifier is the production verifier ───────────
@@ -373,56 +372,5 @@ contract ZKSNGovernanceTest is Test {
         bytes32 id = strictGov.createProposal(keccak256("c"), address(0), "");
         vm.expectRevert("Invalid ZK proof");
         strictGov.castVote(id, keccak256("v1"), true, hex"badbad");
-    }
-}
-
-// ── PassthroughVerifier — captures signals without violating view ─────────────
-
-/**
- * @dev Test helper verifier that:
- *   - Always returns true from verifyProof (view — no state mutation)
- *   - Captures signals via a Foundry vm.store / transient pattern:
- *     call startCapture() before castVote, then read capturedSignal(i) after.
- *
- * Implementation: verifyProof writes to a dedicated storage slot via inline
- * assembly (the EVM does not enforce view at the bytecode level — only the
- * Solidity compiler does at call sites, not within the same contract context).
- * This is safe for test-only use.
- */
-contract PassthroughVerifier is IVerifier {
-    // Storage slots for captured signals (slot 0-3)
-    uint256[4] private _captured;
-    bool private _capturing;
-
-    function startCapture() external {
-        _capturing = true;
-        delete _captured;
-    }
-
-    function capturedSignal(uint256 index) external view returns (uint256) {
-        return _captured[index];
-    }
-
-    function verifyProof(bytes calldata, uint256[4] calldata signals)
-        external
-        view
-        override
-        returns (bool)
-    {
-        // Write captured signals via assembly to bypass Solidity view restriction.
-        // Slot layout: _captured[i] is at slot i (first state var is slot 0).
-        if (_capturing) {
-            uint256 s0 = signals[0];
-            uint256 s1 = signals[1];
-            uint256 s2 = signals[2];
-            uint256 s3 = signals[3];
-            assembly {
-                sstore(0, s0)
-                sstore(1, s1)
-                sstore(2, s2)
-                sstore(3, s3)
-            }
-        }
-        return true;
     }
 }
