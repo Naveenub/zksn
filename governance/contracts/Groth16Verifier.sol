@@ -127,20 +127,20 @@ contract Groth16Verifier is IVerifier {
         // vkx = IC[0] + IC[1]*s[0] + IC[2]*s[1] + IC[3]*s[2] + IC[4]*s[3]
         (uint256 vx, uint256 vy) = (IC0_X, IC0_Y);
         {
-            (uint256 tx, uint256 ty) = _g1Mul(IC1_X, IC1_Y, signals[0]);
-            (vx, vy) = _g1Add(vx, vy, tx, ty);
+            (uint256 mx, uint256 my) = _g1Mul(IC1_X, IC1_Y, signals[0]);
+            (vx, vy) = _g1Add(vx, vy, mx, my);
         }
         {
-            (uint256 tx, uint256 ty) = _g1Mul(IC2_X, IC2_Y, signals[1]);
-            (vx, vy) = _g1Add(vx, vy, tx, ty);
+            (uint256 mx, uint256 my) = _g1Mul(IC2_X, IC2_Y, signals[1]);
+            (vx, vy) = _g1Add(vx, vy, mx, my);
         }
         {
-            (uint256 tx, uint256 ty) = _g1Mul(IC3_X, IC3_Y, signals[2]);
-            (vx, vy) = _g1Add(vx, vy, tx, ty);
+            (uint256 mx, uint256 my) = _g1Mul(IC3_X, IC3_Y, signals[2]);
+            (vx, vy) = _g1Add(vx, vy, mx, my);
         }
         {
-            (uint256 tx, uint256 ty) = _g1Mul(IC4_X, IC4_Y, signals[3]);
-            (vx, vy) = _g1Add(vx, vy, tx, ty);
+            (uint256 mx, uint256 my) = _g1Mul(IC4_X, IC4_Y, signals[3]);
+            (vx, vy) = _g1Add(vx, vy, mx, my);
         }
 
         // ── pairing check ─────────────────────────────────────────────────────
