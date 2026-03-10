@@ -29,7 +29,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use zksn_economic::cashu::{CashuError, CashuToken};
-use zksn_economic::mint::MintClient;
+use zksn_economic::mint::{MintClient, NodeWallet};
 
 use crate::config::EconomicConfig;
 
@@ -41,16 +41,29 @@ pub struct PaymentGuard {
     /// Secrets of proofs seen during this session — prevents double-spend
     /// within a single node instance even if the mint is temporarily offline.
     seen_secrets: Arc<Mutex<HashSet<String>>>,
+    /// Persistent wallet — accumulates earned proofs from successful swaps.
+    wallet: NodeWallet,
 }
 
 impl PaymentGuard {
     pub fn new(config: &EconomicConfig, testnet: bool) -> Self {
+        let wallet = if let Some(ref path) = config.wallet_store_path {
+            NodeWallet::new_persistent(path)
+        } else {
+            NodeWallet::new_in_memory()
+        };
         Self {
             testnet,
             min_value: config.min_token_value,
             mint: MintClient::new(config.cashu_mint_url.clone()),
             seen_secrets: Arc::new(Mutex::new(HashSet::new())),
+            wallet,
         }
+    }
+
+    /// Current node wallet balance in satoshis.
+    pub fn balance(&self) -> u64 {
+        self.wallet.balance()
     }
 
     /// Verify `token` and claim its proofs.
@@ -118,12 +131,13 @@ impl PaymentGuard {
             }
         }
 
-        // ── async background claim (best-effort swap) ─────────────────────────
+        // ── async background claim (best-effort swap + unblinding) ────────────
         let mint = self.mint.clone();
         let proofs = token.proofs.clone();
+        let wallet = self.wallet.clone();
         tokio::spawn(async move {
-            match mint.verify_and_claim(proofs).await {
-                Ok(()) => debug!("Background claim succeeded"),
+            match mint.verify_and_claim(proofs, &wallet).await {
+                Ok(sats) => debug!("Background claim succeeded: {sats} sats earned"),
                 Err(e) => warn!("Background claim failed (will retry next restart): {e}"),
             }
         });

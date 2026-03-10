@@ -79,6 +79,10 @@ pub struct EconomicConfig {
     pub min_token_value: u64,
     pub monero_rpc_url: String,
     pub redemption_batch_size: usize,
+    /// Path to the node wallet JSON store.  `None` = in-memory only (lost on
+    /// restart).  Set to a persistent path in production so earned proofs
+    /// survive restarts.
+    pub wallet_store_path: Option<String>,
 }
 impl Default for EconomicConfig {
     fn default() -> Self {
@@ -87,6 +91,7 @@ impl Default for EconomicConfig {
             min_token_value: 1,
             monero_rpc_url: "http://127.0.0.1:18082".to_string(),
             redemption_batch_size: 100,
+            wallet_store_path: None,
         }
     }
 }
