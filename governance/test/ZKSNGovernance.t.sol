@@ -412,11 +412,15 @@ contract PassthroughVerifier is IVerifier {
         // Write captured signals via assembly to bypass Solidity view restriction.
         // Slot layout: _captured[i] is at slot i (first state var is slot 0).
         if (_capturing) {
+            uint256 s0 = signals[0];
+            uint256 s1 = signals[1];
+            uint256 s2 = signals[2];
+            uint256 s3 = signals[3];
             assembly {
-                sstore(0, calldataload(signals.offset))
-                sstore(1, calldataload(add(signals.offset, 0x20)))
-                sstore(2, calldataload(add(signals.offset, 0x40)))
-                sstore(3, calldataload(add(signals.offset, 0x60)))
+                sstore(0, s0)
+                sstore(1, s1)
+                sstore(2, s2)
+                sstore(3, s3)
             }
         }
         return true;
