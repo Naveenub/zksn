@@ -2,7 +2,9 @@
 pragma solidity ^0.8.20;
 import "./IVerifier.sol";
 
-/// Always returns true — for testing only.
+/// @dev DEV / TEST ONLY — never deploy as the production verifier.
+/// For production, deploy Groth16Verifier.sol after the trusted setup ceremony.
+/// Always returns true — accepts any proof unconditionally.
 contract MockVerifier is IVerifier {
     function verifyProof(bytes calldata, uint256[4] calldata) external pure returns (bool) {
         return true;
