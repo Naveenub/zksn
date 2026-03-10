@@ -18,6 +18,8 @@ pub enum CashuError {
     Serialization(#[from] serde_json::Error),
     #[error("HTTP error: {0}")]
     Http(String),
+    #[error("Melt failed: {0}")]
+    MeltFailed(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
