@@ -25,29 +25,29 @@ import "../contracts/PoseidonHasher.sol";
 contract ZKSNGovernanceTest is Test {
     // ── fixtures ──────────────────────────────────────────────────────────────
 
-    ZKSNGovernance gov;           // uses StrictMockVerifier (governance logic tests)
-    ZKSNGovernance groth16Gov;    // uses real Groth16Verifier (verifier tests)
+    ZKSNGovernance gov; // uses StrictMockVerifier (governance logic tests)
+    ZKSNGovernance groth16Gov; // uses real Groth16Verifier (verifier tests)
     MockVerifier mock;
     StrictMockVerifier strict;
     Groth16Verifier realVerifier;
     PoseidonHasher hasher;
 
-    bytes32 constant ROOT  = keccak256("initial_root");
-    bytes   constant PROOF = hex"deadbeef";
+    bytes32 constant ROOT = keccak256("initial_root");
+    bytes constant PROOF = hex"deadbeef";
 
     // Valid 256-byte proof encoding (a, b, c all zero — will fail pairing but
     // passes the length and field-element checks in Groth16Verifier)
     bytes constant ZERO_PROOF = abi.encode(
-        [uint256(0), uint256(0)],           // a
+        [uint256(0), uint256(0)], // a
         [[uint256(0), uint256(0)], [uint256(0), uint256(0)]], // b
-        [uint256(0), uint256(0)]            // c
+        [uint256(0), uint256(0)] // c
     );
 
     function setUp() public {
-        mock         = new MockVerifier();
-        strict       = new StrictMockVerifier();
+        mock = new MockVerifier();
+        strict = new StrictMockVerifier();
         realVerifier = new Groth16Verifier();
-        hasher       = new PoseidonHasher();
+        hasher = new PoseidonHasher();
 
         // Governance logic tests — StrictMockVerifier (pre-approve PROOF)
         gov = new ZKSNGovernance(address(strict), ROOT);
@@ -221,12 +221,8 @@ contract ZKSNGovernanceTest is Test {
 
     /// verifyProof called directly — returns false for zero proof.
     function test_Groth16_DirectCallReturnsFalse() public {
-        uint256[4] memory signals = [
-            uint256(keccak256("nullifier")),
-            uint256(keccak256("proposal")),
-            uint256(1),
-            uint256(keccak256("root"))
-        ];
+        uint256[4] memory signals =
+            [uint256(keccak256("nullifier")), uint256(keccak256("proposal")), uint256(1), uint256(keccak256("root"))];
         // ZERO_PROOF has valid length and encoding but fails pairing
         bool result = realVerifier.verifyProof(ZERO_PROOF, signals);
         assertFalse(result);
@@ -264,20 +260,17 @@ contract ZKSNGovernanceTest is Test {
         MockVerifier mv = new MockVerifier();
         ZKSNGovernance captureGov = new ZKSNGovernance(address(mv), ROOT);
 
-        bytes32 id            = captureGov.createProposal(keccak256("p"), address(0), "");
+        bytes32 id = captureGov.createProposal(keccak256("p"), address(0), "");
         bytes32 nullifierHash = keccak256("my_nullifier");
-        bytes  memory proof   = hex"aabbccdd";
+        bytes memory proof = hex"aabbccdd";
 
         uint256[4] memory expectedSignals;
         expectedSignals[0] = uint256(nullifierHash); // signals[0] = nullifierHash
-        expectedSignals[1] = uint256(id);            // signals[1] = proposalId
-        expectedSignals[2] = uint256(1);             // signals[2] = 1 (voteYes=true)
-        expectedSignals[3] = uint256(ROOT);          // signals[3] = membershipRoot
+        expectedSignals[1] = uint256(id); // signals[1] = proposalId
+        expectedSignals[2] = uint256(1); // signals[2] = 1 (voteYes=true)
+        expectedSignals[3] = uint256(ROOT); // signals[3] = membershipRoot
 
-        vm.expectCall(
-            address(mv),
-            abi.encodeCall(IVerifier.verifyProof, (proof, expectedSignals))
-        );
+        vm.expectCall(address(mv), abi.encodeCall(IVerifier.verifyProof, (proof, expectedSignals)));
         captureGov.castVote(id, nullifierHash, true, proof);
     }
 
@@ -285,20 +278,17 @@ contract ZKSNGovernanceTest is Test {
         MockVerifier mv = new MockVerifier();
         ZKSNGovernance captureGov = new ZKSNGovernance(address(mv), ROOT);
 
-        bytes32 id            = captureGov.createProposal(keccak256("p"), address(0), "");
+        bytes32 id = captureGov.createProposal(keccak256("p"), address(0), "");
         bytes32 nullifierHash = keccak256("voter_no");
-        bytes  memory proof   = hex"aabb";
+        bytes memory proof = hex"aabb";
 
         uint256[4] memory expectedSignals;
         expectedSignals[0] = uint256(nullifierHash);
         expectedSignals[1] = uint256(id);
-        expectedSignals[2] = uint256(0);    // signals[2] = 0 (voteYes=false)
+        expectedSignals[2] = uint256(0); // signals[2] = 0 (voteYes=false)
         expectedSignals[3] = uint256(ROOT);
 
-        vm.expectCall(
-            address(mv),
-            abi.encodeCall(IVerifier.verifyProof, (proof, expectedSignals))
-        );
+        vm.expectCall(address(mv), abi.encodeCall(IVerifier.verifyProof, (proof, expectedSignals)));
         captureGov.castVote(id, nullifierHash, false, proof);
     }
 
@@ -339,9 +329,9 @@ contract ZKSNGovernanceTest is Test {
 
     /// hashNullifier is deterministic and distinct per proposalId.
     function test_Poseidon_NullifierDeterministic() public {
-        uint256 secret     = 99999;
-        uint256 proposalA  = uint256(keccak256("propA"));
-        uint256 proposalB  = uint256(keccak256("propB"));
+        uint256 secret = 99999;
+        uint256 proposalA = uint256(keccak256("propA"));
+        uint256 proposalB = uint256(keccak256("propB"));
 
         assertEq(hasher.hashNullifier(secret, proposalA), hasher.hashNullifier(secret, proposalA));
         assertNotEq(hasher.hashNullifier(secret, proposalA), hasher.hashNullifier(secret, proposalB));
@@ -356,7 +346,7 @@ contract ZKSNGovernanceTest is Test {
 
     /// hashNode is deterministic and order-sensitive.
     function test_Poseidon_NodeOrderSensitive() public {
-        uint256 left  = 111;
+        uint256 left = 111;
         uint256 right = 222;
         uint256 h1 = hasher.hashNode(left, right);
         uint256 h2 = hasher.hashNode(right, left);
