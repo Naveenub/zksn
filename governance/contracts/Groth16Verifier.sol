@@ -52,13 +52,10 @@ contract Groth16VerifierBase {
     uint16 constant pPairing = 128;
     uint16 constant pLastMem = 896;
 
-    /// @dev Direct Groth16 verification with split proof components.
-    function _verifyProof(
-        uint256[2] calldata pA,
-        uint256[2][2] calldata pB,
-        uint256[2] calldata pC,
-        uint256[4] calldata pubSignals
-    ) internal view returns (bool) {
+    /// @dev Internal Groth16 verification. pOff is the calldata byte offset of
+    ///      the 256-byte proof blob: [pA(64B)][pB(128B)][pC(64B)].
+    ///      pubSignals is the calldata offset of the uint256[4] signals array.
+    function _verifyProof(uint256 pOff, uint256[4] calldata pubSignals) internal view returns (bool) {
         assembly {
             function checkField(v) {
                 if iszero(lt(v, r)) {
@@ -99,8 +96,10 @@ contract Groth16VerifierBase {
                 g1_mulAccC(_pVk, IC3x, IC3y, calldataload(add(pubSig, 64)))
                 g1_mulAccC(_pVk, IC4x, IC4y, calldataload(add(pubSig, 96)))
 
+                // pA = pA_[0..1], negate y
                 mstore(_pPairing, calldataload(pA_))
                 mstore(add(_pPairing, 32), mod(sub(q, calldataload(add(pA_, 32))), q))
+                // pB = pB_[0][0..1], pB_[1][0..1]
                 mstore(add(_pPairing, 64), calldataload(pB_))
                 mstore(add(_pPairing, 96), calldataload(add(pB_, 32)))
                 mstore(add(_pPairing, 128), calldataload(add(pB_, 64)))
@@ -117,6 +116,7 @@ contract Groth16VerifierBase {
                 mstore(add(_pPairing, 480), gammax2)
                 mstore(add(_pPairing, 512), gammay1)
                 mstore(add(_pPairing, 544), gammay2)
+                // pC = pC_[0..1]
                 mstore(add(_pPairing, 576), calldataload(pC_))
                 mstore(add(_pPairing, 608), calldataload(add(pC_, 32)))
                 mstore(add(_pPairing, 640), deltax1)
@@ -131,12 +131,14 @@ contract Groth16VerifierBase {
             let pMem := mload(0x40)
             mstore(0x40, add(pMem, pLastMem))
 
+            // Validate all signals are in field
             checkField(calldataload(add(pubSignals, 0)))
             checkField(calldataload(add(pubSignals, 32)))
             checkField(calldataload(add(pubSignals, 64)))
             checkField(calldataload(add(pubSignals, 96)))
 
-            let isValid := checkPairing(pA, pB, pC, pubSignals, pMem)
+            // proof layout: [pA: 0x00-0x3F][pB: 0x40-0xBF][pC: 0xC0-0xFF]
+            let isValid := checkPairing(pOff, add(pOff, 0x40), add(pOff, 0xC0), pubSignals, pMem)
             mstore(0, isValid)
             return(0, 0x20)
         }
@@ -166,9 +168,15 @@ contract Groth16Verifier is Groth16VerifierBase, IVerifier {
      * @notice Verify a Groth16 MembershipVote proof.
      *
      * @param proof    ABI-encoded `(uint256[2] pA, uint256[2][2] pB, uint256[2] pC)` — 256 bytes.
+     *                 Layout: [pA: 0x00-0x3F][pB: 0x40-0xBF][pC: 0xC0-0xFF]
      * @param signals  [nullifierHash, proposalId, voteYes, membershipRoot]
-     *                 Must match the circuit's public signal order exactly.
      * @return         true iff the proof is valid for these signals and the VK.
+     *
+     * JS proof encoding:
+     *   const proofBytes = ethers.AbiCoder.defaultAbiCoder().encode(
+     *     ["uint256[2]", "uint256[2][2]", "uint256[2]"],
+     *     [proof.pi_a.slice(0,2), [proof.pi_b[0], proof.pi_b[1]], proof.pi_c.slice(0,2)]
+     *   );
      */
     function verifyProof(bytes calldata proof, uint256[4] calldata signals)
         external
@@ -178,18 +186,14 @@ contract Groth16Verifier is Groth16VerifierBase, IVerifier {
     {
         if (proof.length != 256) return false;
 
-        uint256[2] calldata pA;
-        uint256[2][2] calldata pB;
-        uint256[2] calldata pC;
-
-        // Decode proof bytes → (pA, pB, pC)
-        // Layout: pA[0..1] @ 0x00, pB[0][0..1] @ 0x40, pB[1][0..1] @ 0x80, pC[0..1] @ 0xC0
+        // Extract the calldata byte offset of proof.data (skip the length word)
+        // proof is a dynamic bytes calldata: [offset_ptr][length][data...]
+        // proof.offset points to the start of the data bytes in calldata.
+        uint256 pOff;
         assembly {
-            pA.offset := proof.offset
-            pB.offset := add(proof.offset, 0x40)
-            pC.offset := add(proof.offset, 0xC0)
+            pOff := proof.offset
         }
 
-        return _verifyProof(pA, pB, pC, signals);
+        return _verifyProof(pOff, signals);
     }
 }
