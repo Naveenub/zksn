@@ -45,9 +45,9 @@ use k256::{
     elliptic_curve::{
         ops::MulByGenerator,
         sec1::{FromEncodedPoint, ToEncodedPoint},
-        Field,
+        Field, ScalarPrimitive,
     },
-    AffinePoint, EncodedPoint, ProjectivePoint, Scalar,
+    AffinePoint, EncodedPoint, ProjectivePoint, Scalar, Secp256k1,
 };
 use rand::RngCore;
 use reqwest::Client;
@@ -376,9 +376,10 @@ pub fn unblind(
     let k_proj: ProjectivePoint = k_affine.into();
 
     // Reconstruct r scalar from big-endian bytes
-    let r_field = Scalar::from_bytes(&ctx.r_scalar.into());
-    let r: Scalar = if r_field.is_some().into() {
-        r_field.unwrap()
+    let r_bytes = k256::FieldBytes::from(ctx.r_scalar);
+    let r_prim = ScalarPrimitive::<Secp256k1>::from_bytes(&r_bytes);
+    let r: Scalar = if r_prim.is_some().into() {
+        r_prim.unwrap().into()
     } else {
         return Err(CashuError::Http(
             "r_scalar is not a valid secp256k1 scalar".into(),
