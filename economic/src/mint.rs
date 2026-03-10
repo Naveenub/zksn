@@ -1,36 +1,40 @@
 //! Cashu mint HTTP client — NUT-00, NUT-01, NUT-03, NUT-07.
 //!
-//! Implements the operations a mix node needs to enforce per-packet payment:
+//! Implements the full economic loop for a mix node:
 //!
 //! 1. `check_state` (NUT-07) — verify submitted proofs are UNSPENT.
 //! 2. `get_keys` (NUT-01) — fetch the mint's active keysets.
-//! 3. `swap` (NUT-03) — atomically spend the client's proofs and issue new
-//!    ones owned by this node.
+//! 3. `swap` (NUT-03) — spend input proofs, unblind the returned signatures,
+//!    and accumulate the resulting proofs in the node's `NodeWallet`.
 //!
-//! ## NUT-00 secp256k1 blind-DH (fully implemented)
-//!
-//! Every blinded output message now carries a correct `B_ = Y + r·G` value:
+//! ## NUT-00 secp256k1 blind-DH — full round-trip
 //!
 //! ```text
-//! secret  ──hash_to_curve──▶  Y (secp256k1 point)
-//!                              │
-//! r (random scalar) ──r·G──▶  rG
-//!                              │
-//!                         Y + rG = B_   ← sent to mint
-//! ```
+//! [Client sends payment]
 //!
-//! The mint returns `C_ = k·B_` (blind signature).  Unblinding yields
-//! `C = C_ - r·K` where `K = k·G` is the mint's public key for that amount.
-//! The node discards `(secret, r)` after the swap; a future wallet PR will
-//! store them in a local proof store to accumulate node earnings.
+//!   secret  ──hash_to_curve──▶  Y
+//!   r (random scalar) ──r·G──▶  rG
+//!                           B_ = Y + r·G   →  sent to mint
+//!
+//! [Mint returns blind signature]
+//!
+//!   C_ = k·B_                              ←  received from mint
+//!
+//! [Node unblinds]
+//!
+//!   K  = mint's public key for this amount (from GET /v1/keys)
+//!   C  = C_ - r·K                         →  valid Cashu proof
+//!
+//! [Node wallet stores (secret, C) as a Proof the operator can melt]
+//! ```
 //!
 //! ### `hash_to_curve` (NUT-00 §3)
 //!
 //! ```text
-//! msg_to_hash = SHA-256("Secp256k1_HashToCurve_Cashu_" ‖ secret)
-//! counter     = 0
+//! msg = SHA-256("Secp256k1_HashToCurve_Cashu_" ‖ secret)
+//! counter = 0
 //! loop:
-//!     candidate = SHA-256(msg_to_hash ‖ counter_le32)
+//!     candidate = SHA-256(msg ‖ counter_le32)
 //!     try 0x02 ‖ candidate as compressed secp256k1 point
 //!     if valid: return it
 //!     counter++
@@ -49,8 +53,12 @@ use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use tracing::debug;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+use tracing::{debug, warn};
 use zeroize::Zeroize;
 
 // ── NUT-07: proof state ───────────────────────────────────────────────────────
@@ -88,6 +96,7 @@ struct CheckStateResponse {
 pub struct Keyset {
     pub id: String,
     pub unit: String,
+    /// amount (as decimal string) → hex-encoded 33-byte compressed secp256k1 pubkey
     pub keys: HashMap<String, String>,
 }
 
@@ -99,8 +108,6 @@ pub struct KeysResponse {
 // ── NUT-03: swap ──────────────────────────────────────────────────────────────
 
 /// A blinded output message `B_ = Y + r·G` (NUT-00).
-///
-/// `B_` is a 33-byte compressed secp256k1 point, hex-encoded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlindedMessage {
     pub amount: u64,
@@ -115,20 +122,20 @@ pub struct BlindedMessage {
 pub struct BlindedSignature {
     pub amount: u64,
     pub id: String,
+    /// Compressed secp256k1 point `C_ = k·B_`, hex-encoded.
     #[serde(rename = "C_")]
     pub c_: String,
 }
 
 /// Secret material produced alongside a `BlindedMessage`.
 ///
-/// The node discards this after the swap for now.  A future wallet PR stores
-/// `(secret, r_scalar)` keyed by `B_` in a local proof store, then calls
-/// `C = C_ - r·K` to obtain a valid Cashu proof the operator can melt via
-/// Lightning.
+/// Used immediately after the swap to unblind `C_ = k·B_` into a valid
+/// Cashu proof via `C = C_ - r·K`.  Zeroize-on-drop.
 #[derive(Zeroize)]
 #[zeroize(drop)]
 pub struct BlindingContext {
-    /// 32-byte secret whose `hash_to_curve` produced `Y`.
+    /// 32-byte random secret whose `hash_to_curve` produced `Y`.
+    /// Becomes `Proof.secret` (hex-encoded) after unblinding.
     pub secret: [u8; 32],
     /// Blinding scalar `r` (big-endian) used to compute `B_ = Y + r·G`.
     pub r_scalar: [u8; 32],
@@ -145,19 +152,139 @@ struct SwapResponse {
     signatures: Vec<BlindedSignature>,
 }
 
+// ── NodeWallet ────────────────────────────────────────────────────────────────
+
+/// Persistent wallet for the mix node operator.
+///
+/// Accumulates `Proof` objects earned from forwarding payments.  Each proof
+/// was produced by unblinding a blind signature from the mint and can be
+/// redeemed via `POST /v1/melt` (NUT-05, future PR).
+///
+/// Thread-safe via `Arc<Mutex<_>>`.  Persists to a JSON lines file on every
+/// credit so earnings survive process restarts.
+#[derive(Debug, Clone)]
+pub struct NodeWallet {
+    inner: Arc<Mutex<WalletInner>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WalletInner {
+    proofs: Vec<Proof>,
+    store_path: Option<PathBuf>,
+}
+
+impl NodeWallet {
+    /// Create an in-memory wallet with no persistence.
+    pub fn new_in_memory() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(WalletInner {
+                proofs: Vec::new(),
+                store_path: None,
+            })),
+        }
+    }
+
+    /// Create a wallet backed by a JSON file at `path`.
+    ///
+    /// Existing proofs are loaded on creation.  Every `credit()` call
+    /// appends to the file atomically.
+    pub fn new_persistent(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref().to_path_buf();
+        let proofs = Self::load_from_file(&path).unwrap_or_default();
+        let count = proofs.len();
+        let wallet = Self {
+            inner: Arc::new(Mutex::new(WalletInner {
+                proofs,
+                store_path: Some(path.clone()),
+            })),
+        };
+        debug!("NodeWallet loaded {} proofs from {:?}", count, path);
+        wallet
+    }
+
+    /// Add earned proofs to the wallet and flush to disk if persistent.
+    pub fn credit(&self, new_proofs: Vec<Proof>) {
+        let mut inner = self.inner.lock().unwrap();
+        let count = new_proofs.len();
+        let total: u64 = new_proofs.iter().map(|p| p.amount).sum();
+
+        if let Some(ref path) = inner.store_path {
+            if let Err(e) = Self::append_to_file(path, &new_proofs) {
+                warn!("NodeWallet: failed to persist {} proofs: {}", count, e);
+            }
+        }
+
+        inner.proofs.extend(new_proofs);
+        debug!(
+            "NodeWallet: credited {} proofs ({} sats), total balance {} sats",
+            count,
+            total,
+            inner.proofs.iter().map(|p| p.amount).sum::<u64>()
+        );
+    }
+
+    /// Total spendable balance in satoshis.
+    pub fn balance(&self) -> u64 {
+        self.inner
+            .lock()
+            .unwrap()
+            .proofs
+            .iter()
+            .map(|p| p.amount)
+            .sum()
+    }
+
+    /// All stored proofs (clone).
+    pub fn proofs(&self) -> Vec<Proof> {
+        self.inner.lock().unwrap().proofs.clone()
+    }
+
+    /// Drain all proofs — call before `POST /v1/melt`.
+    pub fn drain(&self) -> Vec<Proof> {
+        let mut inner = self.inner.lock().unwrap();
+        std::mem::take(&mut inner.proofs)
+    }
+
+    // ── persistence helpers ───────────────────────────────────────────────────
+
+    fn load_from_file(path: &Path) -> Option<Vec<Proof>> {
+        let data = std::fs::read_to_string(path).ok()?;
+        let proofs: Vec<Proof> = serde_json::from_str(&data).ok()?;
+        Some(proofs)
+    }
+
+    fn append_to_file(path: &Path, proofs: &[Proof]) -> std::io::Result<()> {
+        use std::io::Write;
+        // Read existing, merge, rewrite atomically via temp file
+        let mut existing: Vec<Proof> = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+        existing.extend_from_slice(proofs);
+        let json = serde_json::to_string_pretty(&existing)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        // Write to .tmp then rename for atomicity
+        let tmp = path.with_extension("tmp");
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.flush()?;
+        std::fs::rename(tmp, path)?;
+        Ok(())
+    }
+}
+
 // ── NUT-00: secp256k1 cryptography ───────────────────────────────────────────
 
 /// NUT-00 `hash_to_curve` — deterministically maps `secret` bytes to a valid
 /// secp256k1 `AffinePoint`.
 ///
-/// Implements the algorithm verbatim from the Cashu NUT-00 specification:
-///
+/// Algorithm (NUT-00 spec):
 /// 1. `msg = SHA-256("Secp256k1_HashToCurve_Cashu_" ‖ secret)`
 /// 2. `counter = 0`
 /// 3. `candidate = SHA-256(msg ‖ counter_le32)`; try `0x02 ‖ candidate` as a
 ///    compressed secp256k1 point.  If valid, return it.  Else `counter++`.
 ///
-/// The loop terminates in ≤ 2 iterations on average (50 % chance per try).
+/// Terminates in ≤ 2 iterations on average.
 pub fn hash_to_curve(secret: &[u8]) -> AffinePoint {
     let mut pre = Sha256::new();
     pre.update(b"Secp256k1_HashToCurve_Cashu_");
@@ -186,23 +313,19 @@ pub fn hash_to_curve(secret: &[u8]) -> AffinePoint {
 
 /// Build a valid NUT-00 blinded output `B_ = Y + r·G`.
 ///
-/// Returns `(BlindedMessage, BlindingContext)`.  The caller should store the
-/// `BlindingContext` to later unblind the mint's response; the current node
-/// implementation discards it (no wallet yet).
+/// Returns `(BlindedMessage, BlindingContext)`.  The `BlindingContext` must be
+/// retained until the mint's swap response arrives so the blind signature can
+/// be unblinded into a spendable proof.
 pub fn make_blinded_output(amount: u64, keyset_id: &str) -> (BlindedMessage, BlindingContext) {
-    // Fresh random secret → Y = hash_to_curve(secret)
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
     let y: ProjectivePoint = hash_to_curve(&secret).into();
 
-    // Random blinding scalar r → r·G
     let r: Scalar = Scalar::random(&mut rand::thread_rng());
     let rg: ProjectivePoint = ProjectivePoint::mul_by_generator(&r);
 
-    // B_ = Y + r·G
     let b_ = (y + rg).to_affine();
     let b_hex = hex::encode(b_.to_encoded_point(true).as_bytes());
-
     let r_scalar: [u8; 32] = r.to_bytes().into();
 
     (
@@ -213,6 +336,69 @@ pub fn make_blinded_output(amount: u64, keyset_id: &str) -> (BlindedMessage, Bli
         },
         BlindingContext { secret, r_scalar },
     )
+}
+
+/// Unblind a mint blind signature into a spendable Cashu `Proof`.
+///
+/// Formula (NUT-00): `C = C_ - r·K`
+///
+/// - `c_hex`   — hex-encoded 33-byte compressed point `C_ = k·B_` from the mint
+/// - `ctx`     — `BlindingContext` produced alongside the `BlindedMessage`
+/// - `k_hex`   — hex-encoded 33-byte mint pubkey `K` for this denomination
+///               (from `KeysResponse.keys[amount.to_string()]`)
+/// - `amount`  — denomination in satoshis
+/// - `keyset_id` — keyset ID for the resulting proof
+///
+/// Returns a `Proof` that is valid at the mint and can be redeemed via melt.
+pub fn unblind(
+    c_hex: &str,
+    ctx: &BlindingContext,
+    k_hex: &str,
+    amount: u64,
+    keyset_id: &str,
+) -> Result<Proof, CashuError> {
+    // Parse C_ from mint
+    let c_bytes = hex::decode(c_hex).map_err(|e| CashuError::Http(format!("C_ hex: {e}")))?;
+    let c_ep = EncodedPoint::from_bytes(&c_bytes)
+        .map_err(|_| CashuError::Http("C_ not a valid point encoding".into()))?;
+    let c_affine: AffinePoint = AffinePoint::from_encoded_point(&c_ep)
+        .into_option()
+        .ok_or_else(|| CashuError::Http("C_ not on secp256k1 curve".into()))?;
+    let c_proj: ProjectivePoint = c_affine.into();
+
+    // Parse mint pubkey K for this denomination
+    let k_bytes = hex::decode(k_hex).map_err(|e| CashuError::Http(format!("K hex: {e}")))?;
+    let k_ep = EncodedPoint::from_bytes(&k_bytes)
+        .map_err(|_| CashuError::Http("K not a valid point encoding".into()))?;
+    let k_affine: AffinePoint = AffinePoint::from_encoded_point(&k_ep)
+        .into_option()
+        .ok_or_else(|| CashuError::Http("K not on secp256k1 curve".into()))?;
+    let k_proj: ProjectivePoint = k_affine.into();
+
+    // Reconstruct r scalar from big-endian bytes
+    let r_field = Scalar::from_bytes(&ctx.r_scalar.into());
+    let r: Scalar = if r_field.is_some().into() {
+        r_field.unwrap()
+    } else {
+        return Err(CashuError::Http(
+            "r_scalar is not a valid secp256k1 scalar".into(),
+        ));
+    };
+
+    // C = C_ - r·K
+    let rk: ProjectivePoint = k_proj * r;
+    let c = (c_proj - rk).to_affine();
+    let c_hex_out = hex::encode(c.to_encoded_point(true).as_bytes());
+
+    // secret is hex-encoded 32-byte random value
+    let secret_hex = hex::encode(ctx.secret);
+
+    Ok(Proof {
+        amount,
+        id: keyset_id.to_string(),
+        secret: secret_hex,
+        c: c_hex_out,
+    })
 }
 
 // ── MintClient ────────────────────────────────────────────────────────────────
@@ -266,8 +452,6 @@ impl MintClient {
     }
 
     /// `POST /v1/checkstate` — verify proofs are UNSPENT (NUT-07).
-    ///
-    /// Uses canonical NUT-00 `hash_to_curve(secret)` for each Y-coordinate.
     pub async fn check_state(&self, proofs: &[Proof]) -> Result<Vec<CheckStateEntry>, CashuError> {
         let ys: Vec<String> = proofs
             .iter()
@@ -300,18 +484,26 @@ impl MintClient {
         Ok(body.states)
     }
 
-    /// `POST /v1/swap` — spend `inputs`, receive blind signatures (NUT-03).
+    /// `POST /v1/swap` — spend `inputs`, unblind the returned signatures,
+    /// and return spendable `Proof` objects (NUT-03 + NUT-00 unblinding).
     ///
-    /// Blinded outputs are built with full NUT-00 `B_ = Y + r·G`.
-    /// Blinding contexts are discarded; wallet unblinding is a future PR.
+    /// This is the complete economic loop:
+    /// 1. Build `B_ = Y + r·G` for each input proof
+    /// 2. POST swap request — mint marks inputs SPENT, returns `C_ = k·B_`
+    /// 3. For each `(C_, ctx)` pair: look up mint pubkey `K` for the amount,
+    ///    compute `C = C_ - r·K` → valid Cashu `Proof`
+    ///
+    /// If the keyset has no pubkey for a given amount, that signature is
+    /// logged as a warning and skipped rather than failing the whole swap.
     pub async fn swap(
         &self,
         inputs: Vec<Proof>,
-        keyset_id: &str,
-    ) -> Result<Vec<BlindedSignature>, CashuError> {
-        let (outputs, _contexts): (Vec<_>, Vec<_>) = inputs
+        keyset: &Keyset,
+    ) -> Result<Vec<Proof>, CashuError> {
+        // Build blinded outputs — keep contexts for unblinding
+        let (outputs, contexts): (Vec<BlindedMessage>, Vec<BlindingContext>) = inputs
             .iter()
-            .map(|p| make_blinded_output(p.amount, keyset_id))
+            .map(|p| make_blinded_output(p.amount, &keyset.id))
             .unzip();
 
         let req = SwapRequest {
@@ -340,12 +532,42 @@ impl MintClient {
             .await
             .map_err(|e| CashuError::Http(e.to_string()))?;
 
-        debug!("Swap: {} blind sigs received", body.signatures.len());
-        Ok(body.signatures)
+        debug!(
+            "Swap: {} blind sigs received — unblinding",
+            body.signatures.len()
+        );
+
+        // Unblind each signature: C = C_ - r·K
+        let mut earned: Vec<Proof> = Vec::with_capacity(body.signatures.len());
+        for (sig, ctx) in body.signatures.iter().zip(contexts.iter()) {
+            let amount_key = sig.amount.to_string();
+            match keyset.keys.get(&amount_key) {
+                Some(k_hex) => match unblind(&sig.c_, ctx, k_hex, sig.amount, &sig.id) {
+                    Ok(proof) => earned.push(proof),
+                    Err(e) => warn!("Unblind failed for {} sats: {}", sig.amount, e),
+                },
+                None => warn!(
+                    "No mint pubkey for {} sats in keyset {} — skipping",
+                    sig.amount, keyset.id
+                ),
+            }
+        }
+
+        debug!("Swap complete: {} proofs earned", earned.len());
+        Ok(earned)
     }
 
-    /// Verify proofs are unspent then atomically claim them (NUT-07 + NUT-03).
-    pub async fn verify_and_claim(&self, proofs: Vec<Proof>) -> Result<(), CashuError> {
+    /// Verify proofs are unspent, claim them via swap, unblind, and credit
+    /// the resulting proofs to `wallet`.
+    ///
+    /// Full flow: NUT-07 checkstate → NUT-01 get_keys → NUT-03 swap +
+    /// NUT-00 unblinding → `NodeWallet::credit`.
+    pub async fn verify_and_claim(
+        &self,
+        proofs: Vec<Proof>,
+        wallet: &NodeWallet,
+    ) -> Result<u64, CashuError> {
+        // Step 1 — verify UNSPENT
         let states = self.check_state(&proofs).await?;
         for entry in &states {
             if entry.state != ProofState::Unspent {
@@ -353,17 +575,26 @@ impl MintClient {
             }
         }
 
+        // Step 2 — fetch keyset (need pubkeys for unblinding)
         let keys = self.get_keys().await?;
-        let keyset_id = keys
+        let keyset = keys
             .keysets
             .into_iter()
             .next()
-            .map(|k| k.id)
-            .unwrap_or_else(|| "00".to_string());
+            .ok_or_else(|| CashuError::Http("Mint returned empty keyset list".into()))?;
 
-        self.swap(proofs, &keyset_id).await?;
-        debug!("verify_and_claim: proofs SPENT");
-        Ok(())
+        // Step 3 — swap + unblind → spendable proofs
+        let earned = self.swap(proofs, &keyset).await?;
+        let earned_sats: u64 = earned.iter().map(|p| p.amount).sum();
+
+        // Step 4 — credit wallet
+        wallet.credit(earned);
+
+        debug!(
+            "verify_and_claim: {} sats credited to node wallet",
+            earned_sats
+        );
+        Ok(earned_sats)
     }
 }
 
@@ -393,18 +624,11 @@ mod tests {
         assert!(decoded.is_some());
     }
 
-    /// Verify `hash_to_curve` produces a stable output for a fixed input
-    /// (regression guard — not a spec vector, since Cashu mint implementations
-    /// vary on how secrets are encoded before hashing).
-    ///
-    /// The algebraic identity test `test_blinded_output_b_minus_rg_equals_y`
-    /// provides the cryptographic correctness proof.
     #[test]
     fn test_hash_to_curve_stable_output() {
         let secret = b"zksn-test-secret";
         let a = hex::encode(hash_to_curve(secret).to_encoded_point(true).as_bytes());
         let b = hex::encode(hash_to_curve(secret).to_encoded_point(true).as_bytes());
-        // Same input always produces the same valid compressed point
         assert_eq!(a, b);
         assert_eq!(a.len(), 66);
         assert!(a.starts_with("02") || a.starts_with("03"));
@@ -448,7 +672,6 @@ mod tests {
         assert_eq!(ctx.r_scalar.len(), 32);
     }
 
-    /// B_ = Y + r·G — verify the construction holds by checking B_ - r·G = Y.
     #[test]
     fn test_blinded_output_b_minus_rg_equals_y() {
         let mut secret = [0u8; 32];
@@ -461,9 +684,166 @@ mod tests {
         let rg: ProjectivePoint = ProjectivePoint::mul_by_generator(&r);
         let b_ = (y + rg).to_affine();
 
-        // B_ - r·G should equal Y
         let recovered = (ProjectivePoint::from(b_) - rg).to_affine();
         assert_eq!(recovered, y_affine, "B_ - r·G must equal Y");
+    }
+
+    // ── unblind ───────────────────────────────────────────────────────────────
+
+    /// Full round-trip: build B_, simulate mint signing (C_ = k·B_),
+    /// unblind to C, verify C == k·Y (the correct Cashu signature relation).
+    ///
+    /// This test uses a synthetic mint keypair (k, K=k·G) so no live mint
+    /// is required.  It proves `unblind` produces a valid proof without a
+    /// network call.
+    #[test]
+    fn test_unblind_roundtrip() {
+        // Synthetic mint keypair: k (private), K = k·G (public)
+        let k: Scalar = Scalar::random(&mut rand::thread_rng());
+        let k_pub: AffinePoint = ProjectivePoint::mul_by_generator(&k).to_affine();
+        let k_hex = hex::encode(k_pub.to_encoded_point(true).as_bytes());
+
+        // Build blinded output
+        let (msg, ctx) = make_blinded_output(64, "test-keyset");
+
+        // Simulate mint: C_ = k · B_
+        let b_bytes = hex::decode(&msg.b_).unwrap();
+        let b_ep = EncodedPoint::from_bytes(&b_bytes).unwrap();
+        let b_affine: AffinePoint = AffinePoint::from_encoded_point(&b_ep).unwrap();
+        let b_proj: ProjectivePoint = b_affine.into();
+        let c_proj = b_proj * k;
+        let c_hex = hex::encode(c_proj.to_affine().to_encoded_point(true).as_bytes());
+
+        // Unblind: C = C_ - r·K
+        let proof = unblind(&c_hex, &ctx, &k_hex, 64, "test-keyset").unwrap();
+
+        // Verify: C should equal k·Y
+        let y: ProjectivePoint = hash_to_curve(&ctx.secret).into();
+        let expected = (y * k).to_affine();
+        let expected_hex = hex::encode(expected.to_encoded_point(true).as_bytes());
+
+        assert_eq!(proof.c, expected_hex, "C must equal k·Y");
+        assert_eq!(proof.amount, 64);
+        assert_eq!(proof.id, "test-keyset");
+        assert_eq!(proof.secret, hex::encode(ctx.secret));
+    }
+
+    #[test]
+    fn test_unblind_rejects_invalid_c_hex() {
+        let (_, ctx) = make_blinded_output(1, "id");
+        let k_pub =
+            ProjectivePoint::mul_by_generator(&Scalar::random(&mut rand::thread_rng())).to_affine();
+        let k_hex = hex::encode(k_pub.to_encoded_point(true).as_bytes());
+
+        let result = unblind("not-hex!!", &ctx, &k_hex, 1, "id");
+        assert!(matches!(result, Err(CashuError::Http(_))));
+    }
+
+    #[test]
+    fn test_unblind_rejects_invalid_k_hex() {
+        let (msg, ctx) = make_blinded_output(1, "id");
+        let result = unblind(&msg.b_, &ctx, "deadbeef", 1, "id");
+        assert!(matches!(result, Err(CashuError::Http(_))));
+    }
+
+    // ── NodeWallet ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_wallet_starts_empty() {
+        let w = NodeWallet::new_in_memory();
+        assert_eq!(w.balance(), 0);
+        assert!(w.proofs().is_empty());
+    }
+
+    #[test]
+    fn test_wallet_credit_updates_balance() {
+        let w = NodeWallet::new_in_memory();
+        w.credit(vec![
+            Proof {
+                amount: 64,
+                id: "id".into(),
+                secret: "s1".into(),
+                c: "c1".into(),
+            },
+            Proof {
+                amount: 32,
+                id: "id".into(),
+                secret: "s2".into(),
+                c: "c2".into(),
+            },
+        ]);
+        assert_eq!(w.balance(), 96);
+    }
+
+    #[test]
+    fn test_wallet_credit_accumulates() {
+        let w = NodeWallet::new_in_memory();
+        w.credit(vec![Proof {
+            amount: 10,
+            id: "id".into(),
+            secret: "s1".into(),
+            c: "c".into(),
+        }]);
+        w.credit(vec![Proof {
+            amount: 20,
+            id: "id".into(),
+            secret: "s2".into(),
+            c: "c".into(),
+        }]);
+        assert_eq!(w.balance(), 30);
+        assert_eq!(w.proofs().len(), 2);
+    }
+
+    #[test]
+    fn test_wallet_drain_empties_balance() {
+        let w = NodeWallet::new_in_memory();
+        w.credit(vec![Proof {
+            amount: 100,
+            id: "id".into(),
+            secret: "s".into(),
+            c: "c".into(),
+        }]);
+        let drained = w.drain();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].amount, 100);
+        assert_eq!(w.balance(), 0);
+    }
+
+    #[test]
+    fn test_wallet_persistent_roundtrip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "zksn-wallet-test-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let w1 = NodeWallet::new_persistent(&path);
+        w1.credit(vec![
+            Proof {
+                amount: 8,
+                id: "id".into(),
+                secret: "s1".into(),
+                c: "c1".into(),
+            },
+            Proof {
+                amount: 16,
+                id: "id".into(),
+                secret: "s2".into(),
+                c: "c2".into(),
+            },
+        ]);
+        assert_eq!(w1.balance(), 24);
+        drop(w1);
+
+        // Reload from disk
+        let w2 = NodeWallet::new_persistent(&path);
+        assert_eq!(w2.balance(), 24);
+        assert_eq!(w2.proofs().len(), 2);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     // ── serialization ─────────────────────────────────────────────────────────
@@ -534,6 +914,7 @@ mod tests {
     #[tokio::test]
     async fn test_verify_and_claim_mint_unreachable() {
         let c = MintClient::new("http://127.0.0.1:1".into());
+        let w = NodeWallet::new_in_memory();
         let proofs = vec![Proof {
             amount: 10,
             id: "id".into(),
@@ -541,16 +922,21 @@ mod tests {
             c: "c".into(),
         }];
         assert!(matches!(
-            c.verify_and_claim(proofs).await,
+            c.verify_and_claim(proofs, &w).await,
             Err(CashuError::MintUnreachable(_))
         ));
+        // Wallet untouched — mint was unreachable before swap
+        assert_eq!(w.balance(), 0);
     }
 
-    /// Prove that the blinded output is built (no panic) before the HTTP call
-    /// fires — the crypto runs synchronously before any await point.
     #[tokio::test]
-    async fn test_swap_valid_outputs_built_before_http() {
+    async fn test_swap_mint_unreachable() {
         let c = MintClient::new("http://127.0.0.1:1".into());
+        let keyset = Keyset {
+            id: "test".into(),
+            unit: "sat".into(),
+            keys: HashMap::new(),
+        };
         let inputs = vec![
             Proof {
                 amount: 1,
@@ -566,7 +952,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            c.swap(inputs, "009a1f293253e41e").await,
+            c.swap(inputs, &keyset).await,
             Err(CashuError::MintUnreachable(_))
         ));
     }
