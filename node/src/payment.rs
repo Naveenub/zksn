@@ -159,6 +159,7 @@ mod tests {
             min_token_value: 1,
             monero_rpc_url: "http://127.0.0.1:18082".to_string(),
             redemption_batch_size: 50,
+            wallet_store_path: None,
         }
     }
 
