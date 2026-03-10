@@ -146,7 +146,105 @@ impl PaymentGuard {
     }
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+// ── MeltManager ───────────────────────────────────────────────────────────────
+
+/// Threshold-triggered Lightning withdrawal manager.
+///
+/// `MeltManager` runs as a background task alongside the mix node.  It polls
+/// the `NodeWallet` balance and fires `POST /v1/melt` (NUT-05) whenever the
+/// balance crosses `threshold_sats`.
+///
+/// ## Usage
+///
+/// ```rust,ignore
+/// let melt_mgr = MeltManager::new(
+///     mint_client.clone(),
+///     wallet.clone(),
+///     500,                         // fire melt when wallet ≥ 500 sats
+///     "lnbc500...".to_string(),    // operator's withdrawal invoice
+///     Duration::from_secs(60),     // poll interval
+/// );
+/// tokio::spawn(melt_mgr.run());
+/// ```
+///
+/// In production the invoice should be replaced with a callback or a fresh
+/// BOLT-11 per melt cycle (static invoices have amount limits).  A single
+/// static invoice is sufficient for development and testing.
+pub struct MeltManager {
+    mint: MintClient,
+    wallet: NodeWallet,
+    /// Wallet balance (sats) that triggers a melt attempt.
+    threshold_sats: u64,
+    /// BOLT-11 invoice to pay on each melt.
+    invoice: String,
+    /// How often to check the wallet balance.
+    poll_interval: std::time::Duration,
+}
+
+impl MeltManager {
+    pub fn new(
+        mint: MintClient,
+        wallet: NodeWallet,
+        threshold_sats: u64,
+        invoice: String,
+        poll_interval: std::time::Duration,
+    ) -> Self {
+        Self {
+            mint,
+            wallet,
+            threshold_sats,
+            invoice,
+            poll_interval,
+        }
+    }
+
+    /// Run the melt loop.  Call via `tokio::spawn(melt_mgr.run())`.
+    ///
+    /// Loops forever — designed to run for the lifetime of the node process.
+    /// Exits only if the tokio runtime shuts down.
+    pub async fn run(self) {
+        use tracing::info;
+        info!(
+            "MeltManager started: threshold={} sats, poll={:?}",
+            self.threshold_sats, self.poll_interval
+        );
+
+        loop {
+            tokio::time::sleep(self.poll_interval).await;
+
+            let balance = self.wallet.balance();
+            if balance < self.threshold_sats {
+                debug!("MeltManager: balance {balance} sats below threshold — waiting");
+                continue;
+            }
+
+            info!(
+                "MeltManager: balance {balance} sats ≥ threshold {} — initiating melt",
+                self.threshold_sats
+            );
+
+            match self.mint.melt_wallet(&self.wallet, &self.invoice).await {
+                Ok(result) => {
+                    info!(
+                        "MeltManager: melt succeeded — {} sats withdrawn, {} proofs spent, preimage={}",
+                        result.total_sats, result.proofs_spent, result.payment_preimage
+                    );
+                }
+                Err(CashuError::InsufficientBalance { need, have }) => {
+                    warn!(
+                        "MeltManager: insufficient balance for melt (need {need}, have {have}) — waiting"
+                    );
+                }
+                Err(CashuError::MintUnreachable(ref e)) => {
+                    warn!("MeltManager: mint unreachable ({e}) — will retry next poll");
+                }
+                Err(e) => {
+                    warn!("MeltManager: melt failed ({e}) — will retry next poll");
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -240,5 +338,56 @@ mod tests {
         let token = make_token(5, "secret_fallback");
         // Should succeed: local check passes, mint unreachable → best-effort
         assert!(guard.check(&token).await.is_ok());
+    }
+
+    // ── MeltManager ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_melt_manager_constructs() {
+        use std::time::Duration;
+        use zksn_economic::mint::{MintClient, NodeWallet};
+        let m = MeltManager::new(
+            MintClient::new("http://127.0.0.1:1".into()),
+            NodeWallet::new_in_memory(),
+            500,
+            "lnbc500...".into(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(m.threshold_sats, 500);
+        assert_eq!(m.invoice, "lnbc500...");
+    }
+
+    /// Verify that `MeltManager::run` does NOT drain the wallet when balance
+    /// is below threshold.  Run for one poll tick then abort.
+    #[tokio::test]
+    async fn test_melt_manager_below_threshold_no_drain() {
+        use std::time::Duration;
+        use zksn_economic::cashu::Proof;
+        use zksn_economic::mint::{MintClient, NodeWallet};
+
+        let wallet = NodeWallet::new_in_memory();
+        wallet.credit(vec![Proof {
+            amount: 10,
+            id: "id".into(),
+            secret: "s".into(),
+            c: "c".into(),
+        }]);
+
+        let mgr = MeltManager::new(
+            MintClient::new("http://127.0.0.1:1".into()),
+            wallet.clone(),
+            500, // threshold: 500 sats — wallet has only 10
+            "lnbc500...".into(),
+            Duration::from_millis(10), // fast poll for test
+        );
+
+        // Run for one tick — balance (10) < threshold (500) so no drain fires
+        tokio::select! {
+            _ = mgr.run() => {}
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+
+        // Wallet untouched
+        assert_eq!(wallet.balance(), 10);
     }
 }
