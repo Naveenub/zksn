@@ -406,46 +406,108 @@ contract ZKSNGovernanceTest is Test {
         iv.verifyProof(ZERO_PROOF, signals);
     }
 
-    // ── 5. PoseidonHasher consistency ─────────────────────────────────────────
+    // ── 5. PoseidonHasher — exact vector tests against circomlibjs output ────────
+    //
+    // All expected values computed with:
+    //   const { buildPoseidon } = require("circomlibjs");
+    //   const poseidon = await buildPoseidon();
+    //   poseidon.F.toObject(poseidon([x]))           // t=2
+    //   poseidon.F.toObject(poseidon([x, y]))        // t=3
+    //
+    // These values match the circuit and off-chain tree builder exactly.
 
-    /// hashLeaf output is deterministic.
-    function test_Poseidon_LeafDeterministic() public {
-        uint256 secret = 12345;
-        assertEq(hasher.hashLeaf(secret), hasher.hashLeaf(secret));
+    /// hashLeaf matches circomlibjs: poseidon([0]) = 19014214495641488759237505126948346942972912379615652741039992445865937985820
+    function test_Poseidon_LeafZero() public view {
+        assertEq(
+            hasher.hashLeaf(0),
+            19014214495641488759237505126948346942972912379615652741039992445865937985820
+        );
+    }
+
+    /// hashLeaf matches circomlibjs: poseidon([1]) = 18586133768512220936620570745912940619677854269274689475585506675881198879027
+    function test_Poseidon_LeafOne() public view {
+        assertEq(
+            hasher.hashLeaf(1),
+            18586133768512220936620570745912940619677854269274689475585506675881198879027
+        );
+    }
+
+    /// hashLeaf matches circomlibjs for ceremony secret.
+    /// poseidon([12345678901234567890]) = 17610922722311195426938483481431943255028223790571250909270476711880232282197
+    function test_Poseidon_LeafCeremonySecret() public view {
+        assertEq(
+            hasher.hashLeaf(12345678901234567890),
+            17610922722311195426938483481431943255028223790571250909270476711880232282197
+        );
     }
 
     /// hashLeaf output is in the BN254 scalar field.
-    function test_Poseidon_LeafInField() public {
+    function test_Poseidon_LeafInField() public view {
         uint256 Q = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
-        uint256 leaf = hasher.hashLeaf(uint256(keccak256("secret")));
-        assertLt(leaf, Q);
+        assertLt(hasher.hashLeaf(999), Q);
     }
 
-    /// hashNullifier is deterministic and distinct per proposalId.
-    function test_Poseidon_NullifierDeterministic() public {
-        uint256 secret = 99999;
-        uint256 proposalA = uint256(keccak256("propA"));
-        uint256 proposalB = uint256(keccak256("propB"));
+    /// hashNullifier matches circomlibjs: poseidon([0,0]) = 14744269619966411208579211824598458697587494354926760081771325075741142829156
+    function test_Poseidon_NullifierZeroZero() public view {
+        assertEq(
+            hasher.hashNullifier(0, 0),
+            14744269619966411208579211824598458697587494354926760081771325075741142829156
+        );
+    }
 
-        assertEq(hasher.hashNullifier(secret, proposalA), hasher.hashNullifier(secret, proposalA));
-        assertNotEq(hasher.hashNullifier(secret, proposalA), hasher.hashNullifier(secret, proposalB));
+    /// hashNullifier matches circomlibjs for ceremony inputs.
+    /// poseidon([12345678901234567890, 999888777666555]) = 21605468119089894529364334093527017674406608084847384275934021833321276526684
+    function test_Poseidon_NullifierCeremonyInputs() public view {
+        assertEq(
+            hasher.hashNullifier(12345678901234567890, 999888777666555),
+            21605468119089894529364334093527017674406608084847384275934021833321276526684
+        );
+    }
+
+    /// hashNullifier matches circuit: REAL_NULLIFIER == hashNullifier(secret, REAL_PROPOSAL_ID)
+    function test_Poseidon_NullifierMatchesCeremony() public view {
+        assertEq(
+            hasher.hashNullifier(12345678901234567890, REAL_PROPOSAL_ID),
+            REAL_NULLIFIER
+        );
+    }
+
+    /// hashNullifier is proposal-specific — same secret, different proposalId → different nullifier.
+    function test_Poseidon_NullifierProposalSpecific() public view {
+        uint256 secret = 99999;
+        assertNotEq(
+            hasher.hashNullifier(secret, 1),
+            hasher.hashNullifier(secret, 2)
+        );
     }
 
     /// hashNullifier output is in the BN254 scalar field.
-    function test_Poseidon_NullifierInField() public {
+    function test_Poseidon_NullifierInField() public view {
         uint256 Q = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
-        uint256 n = hasher.hashNullifier(42, uint256(keccak256("prop")));
-        assertLt(n, Q);
+        assertLt(hasher.hashNullifier(42, 7), Q);
     }
 
-    /// hashNode is deterministic and order-sensitive.
-    function test_Poseidon_NodeOrderSensitive() public {
-        uint256 left = 111;
-        uint256 right = 222;
-        uint256 h1 = hasher.hashNode(left, right);
-        uint256 h2 = hasher.hashNode(right, left);
-        // Poseidon is not symmetric — left/right ordering matters for Merkle proofs
-        assertNotEq(h1, h2);
+    /// hashNode matches circomlibjs: poseidon([1,2]) = 7853200120776062878684798364095072458815029376092732009249414926327459813530
+    function test_Poseidon_NodeVector() public view {
+        assertEq(
+            hasher.hashNode(1, 2),
+            7853200120776062878684798364095072458815029376092732009249414926327459813530
+        );
+    }
+
+    /// hashNode is order-sensitive — Poseidon is not symmetric.
+    function test_Poseidon_NodeOrderSensitive() public view {
+        assertNotEq(hasher.hashNode(1, 2), hasher.hashNode(2, 1));
+    }
+
+    /// merkleRoot of the 16-leaf ceremony tree matches the circuit root.
+    /// Leaf 0 = Poseidon(secret), leaves 1–15 = 0.
+    function test_Poseidon_MerkleRootMatchesCeremony() public view {
+        uint256[] memory leaves = new uint256[](16);
+        leaves[0] = hasher.hashLeaf(12345678901234567890);
+        // leaves[1..15] stay 0
+
+        assertEq(hasher.merkleRoot(leaves), REAL_MEMBERSHIP_ROOT);
     }
 
     // ── 6. StrictMockVerifier — existing proof-approval tests ─────────────────
