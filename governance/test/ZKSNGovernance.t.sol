@@ -59,18 +59,19 @@ contract ZKSNGovernanceTest is Test {
     //   proposalId     = 999888777666555444333222111
     //   voteYes        = 1
     //   membershipRoot = 19748651011774828787493657306186640906239354906814775894613021125601476386351
-    // Proof from ZKSN dev ceremony — MembershipVote(depth=4), pot12.
+    // Proof from ZKSN 3-contributor MPC ceremony — MembershipVote(depth=4), pot12.
     // Input: secret=12345678901234567890, tree index=0, proposalId=999888777666555.
     // G2 Fp2 coords stored in EIP-197 order: (imaginary, real).
+    // See ceremony/ATTESTATION.md for contribution hashes.
     bytes constant REAL_PROOF =
-        hex"223ea7c58b8c240df8ffe5b4248bcc89cbe291163d346e0676258ce7d4db9522"
-        hex"1ca50dff7748afecaaec0a73398c3a805d662d99da5fed3e3fd39c9d98481888"
-        hex"001a5b28ebfb3d97d07add009f1585236cdd0e2b50f7063f31e7e4be7ffa3b96"
-        hex"2897bc2ecaf8a31029f595c45edd1481731af5bc57de6191c994a2083d2f87d1"
-        hex"08a8e0246a7ec4519e4d3df4eadb1b233efce091716e8e607462eb35f3ad864d"
-        hex"20abfd808cd816e5f7379b8286bb3077f2a0972a7473ba8729c05f9b2c9e3264"
-        hex"09719fc4f74e76041be89a5ba9ea7416807b18decb2df83809b9e6339c421eee"
-        hex"2ff4d52ee3d4622a6c4dfdb78494ffe804f51b4ccd48be5476386fbf6b475f07";
+        hex"2d41401779fb6b5408e811358589d16a337bac148543b8bb292880dc5d17f3ff"
+        hex"12143fb3e11718fb0041c483e047d2532263357193d7ed3569f324a4e51f5883"
+        hex"01485277aadf23e6be996b17b7f179c1d7cb717fded7ed9080b8ec588b16b9dd"
+        hex"0b3ca537c7663440836beb2ccbf22fd931d607af48441b5b1758a54cefcdb7b4"
+        hex"08df05b1f111c488cfd1b8bcedfbf2c8cb933f6752c374875e9b02ab5dc8c92f"
+        hex"22fefb84aff026f9c9369adf1a23b90d5ec14d2be9a69cc29f64ec379009f07e"
+        hex"12f76c095f4b42996d409bf3733c1cc813574dc6a296308f2949c8e4e2629de9"
+        hex"271b2146d5934a5a099f732a2cb898414ed6e2af17e2d8e1dad183dbd8b0da8e";
 
     uint256 constant REAL_NULLIFIER =
         21605468119089894529364334093527017674406608084847384275934021833321276526684;
