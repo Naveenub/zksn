@@ -69,4 +69,4 @@ template MembershipVote(depth) {
 }
 
 component main {public [nullifierHash, proposalId, voteYes, membershipRoot]} =
-    MembershipVote(4);
+    MembershipVote(20);
