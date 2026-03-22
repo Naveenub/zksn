@@ -65,10 +65,10 @@ contract ZKSNGovernanceTest is Test {
     // G2 Fp2 coords in EIP-197 order: (imaginary, real).
     // See ceremony/ATTESTATION.md for full contribution chain.
     bytes constant REAL_PROOF =
-        hex"2f5d04b4c973e94a21808f2c9ccd71ab8b0eb4ff3de96b7ea65103944eb297d"
-        hex"716e4aaecf73c6a01d6ffc8687a0d7df4bd1f9e7303338a3f3b00dcc91cf628"
-        hex"1b2ddb47ce879664a584181bdd858823a07e0229690e59b02c29dddf098fda88"
-        hex"901f1a78a1d39833b105cff4e78b3300082275d4b669dd5f38a896c6e8e44022"
+        hex"2f5d04b4c973e94a21808f2c9ccd71ab8b0eb4ff3de96b7ea65103944eb297d7"
+        hex"16e4aaecf73c6a01d6ffc8687a0d7df4bd1f9e7303338a3f3b00dcc91cf6281b"
+        hex"2ddb47ce879664a584181bdd858823a07e0229690e59b02c29dddf098fda8890"
+        hex"1f1a78a1d39833b105cff4e78b3300082275d4b669dd5f38a896c6e8e440e242"
         hex"21c460f06130121158f2cd6a73d8a2d21b440810df7205bfce73e7c22094995c"
         hex"1a912eb6836047f4edcba8ced65eb5eba73c3a1772194e6e96c4b3eb5bdb4b28"
         hex"2851c93fa1b22fcbed647fa1156ebd19f88d69335dea840d6d2bda4c58968ca4"
