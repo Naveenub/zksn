@@ -48,3 +48,9 @@ panic         = "abort"
 [profile.dev]
 opt-level = 0
 debug     = true
+
+# ── Security patches ──────────────────────────────────────────────────────────
+# RUSTSEC-2026-0049: rustls-webpki CRL distribution point faulty matching logic.
+# Pins to the patched version. Remove once reqwest resolves this transitively.
+[patch.crates-io]
+rustls-webpki = { version = "=0.103.10" }
