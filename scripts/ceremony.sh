@@ -4,42 +4,44 @@
 # Usage:
 #   Coordinator:   bash scripts/ceremony.sh init
 #   Contributor N: bash scripts/ceremony.sh contribute <n> <input.zkey> <output.zkey>
-#   Coordinator:   bash scripts/ceremony.sh finalize
+#   Coordinator:   bash scripts/ceremony.sh finalize [n_contributors]
 #   Anyone:        bash scripts/ceremony.sh verify
 #
-# Mainnet upgrade path:
-#   1. Replace PTAU with Hermez pot28:
-#      wget https://hermez.s3-eu-west-1.amazonaws.com/powersoftau28_hez_final.ptau
-#   2. Recompile circuit at depth 20:
-#      circom circuits/MembershipVote.circom --r1cs --wasm -l node_modules -o build/
-#   3. Re-run this script — everything else is identical.
+# Mainnet upgrade path (replace pot15 with Hermez pot28):
+#   wget https://hermez.s3-eu-west-1.amazonaws.com/powersoftau28_hez_final.ptau \
+#        -O ceremony/pot28_final.ptau
+#   Edit PTAU below, then re-run this script — everything else is identical.
 
 set -euo pipefail
 
 CIRCUIT_R1CS="build/MembershipVote.r1cs"
 CIRCUIT_WASM="build/MembershipVote_js/MembershipVote.wasm"
-PTAU="ceremony/pot12_final.ptau"           # swap for pot28 on mainnet
-CEREMONY_DIR="ceremony/phase2"
+PTAU="ceremony/pot15_final.ptau"       # swap for pot28 on mainnet
+CEREMONY_DIR="ceremony"
 SNARKJS="npx snarkjs"
 
-# ── Beacon — use a future Bitcoin/Ethereum block hash for mainnet ─────────────
-# Dev beacon (deterministic). Replace before mainnet:
-#   BEACON=$(curl -s https://blockchain.info/q/latesthash)
+# ── Beacon ────────────────────────────────────────────────────────────────────
+# Dev beacon (deterministic). Replace before mainnet with a future block hash:
+#   BEACON=$(cast block --rpc-url https://eth.llamarpc.com latest | grep hash | awk '{print $2}' | sed 's/0x//')
 BEACON="0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
 BEACON_ITERATIONS=10
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 init() {
-    echo "=== ZKSN Phase 2 — Init ==="
+    echo "=== ZKSN Phase 2 — Init (depth-20) ==="
     mkdir -p "$CEREMONY_DIR"
 
     if [[ ! -f "$CIRCUIT_R1CS" ]]; then
-        echo "Compiling circuit..."
+        echo "Compiling circuit (depth=20)..."
         npx circom2 circuits/MembershipVote.circom \
-            --r1cs --wasm -l node_modules -o build/
+            --r1cs --wasm --sym \
+            -l node_modules \
+            -o build/
+        echo "Compiled: $(du -h build/MembershipVote.r1cs | cut -f1) r1cs"
     fi
 
+    echo "Phase 2 setup against $PTAU..."
     $SNARKJS groth16 setup \
         "$CIRCUIT_R1CS" \
         "$PTAU" \
@@ -61,7 +63,6 @@ contribute() {
     echo "Output: $OUTPUT"
     echo ""
 
-    # Generate entropy from OS CSPRNG mixed with user prompt
     local ENTROPY
     read -rsp "Enter additional entropy (any text, not stored): " USER_ENTROPY
     echo ""
@@ -84,14 +85,14 @@ contribute() {
     echo ""
     echo "Please attest (append to ceremony/ATTESTATION.md):"
     echo "  - Contributor number: $N"
-    echo "  - Output SHA256: $HASH"
-    echo "  - Confirmation: entropy was generated fresh and not retained"
+    echo "  - Output SHA256:      $HASH"
+    echo "  - Confirmation:       entropy was generated fresh and not retained"
     echo ""
     echo "→ Send $OUTPUT to the next contributor or back to the coordinator"
 }
 
 finalize() {
-    local N="${1:-3}"   # number of contributors
+    local N="${1:-3}"
     local LAST_ZKEY="$CEREMONY_DIR/zkey_$(printf '%04d' "$N").zkey"
 
     echo "=== ZKSN Phase 2 — Finalize ==="
@@ -105,15 +106,15 @@ finalize() {
         -n="ZKSN Multi-Party Final Beacon"
 
     echo ""
-    echo "=== Exporting verification key and Solidity verifier ==="
+    echo "=== Exporting VK and Solidity verifier ==="
 
     $SNARKJS zkey export verificationkey \
         "$CEREMONY_DIR/zkey_final.zkey" \
-        "ceremony/verification_key.json"
+        "$CEREMONY_DIR/verification_key.json"
 
     $SNARKJS zkey export solidityverifier \
         "$CEREMONY_DIR/zkey_final.zkey" \
-        "ceremony/Groth16Verifier_generated.sol"
+        "$CEREMONY_DIR/Groth16Verifier_generated.sol"
 
     local FINAL_HASH
     FINAL_HASH=$(sha256sum "$CEREMONY_DIR/zkey_final.zkey" | awk '{print $1}')
@@ -123,10 +124,13 @@ finalize() {
     echo "   zkey_final SHA256: $FINAL_HASH"
     echo ""
     echo "Next steps:"
-    echo "  1. cp ceremony/Groth16Verifier_generated.sol governance/contracts/Groth16Verifier.sol"
-    echo "  2. Update REAL_PROOF and signal constants in test/ZKSNGovernance.t.sol"
-    echo "  3. Run: forge test"
-    echo "  4. Commit with message: 'feat/ceremony-mainnet: N-party trusted setup'"
+    echo "  1. Update VK constants in governance/contracts/Groth16Verifier.sol"
+    echo "     (copy deltax1/deltax2/deltay1/deltay2 and IC0..IC4 from verification_key.json)"
+    echo "  2. Regenerate proof:  node scripts/tree.js input <secret> <proposalId> 1 > input.json"
+    echo "     then:              npx snarkjs groth16 prove ..."
+    echo "  3. Update REAL_PROOF / REAL_MEMBERSHIP_ROOT in governance/test/ZKSNGovernance.t.sol"
+    echo "  4. forge test"
+    echo "  5. Commit: 'feat/ceremony-mainnet: depth-20 N-party trusted setup'"
 }
 
 verify() {
@@ -142,14 +146,14 @@ verify() {
 
     $SNARKJS groth16 prove \
         "$CEREMONY_DIR/zkey_final.zkey" \
-        "ceremony/witness.wtns" \
-        "ceremony/proof.json" \
-        "ceremony/public.json"
+        "$CEREMONY_DIR/witness.wtns" \
+        "$CEREMONY_DIR/proof.json" \
+        "$CEREMONY_DIR/public.json"
 
     $SNARKJS groth16 verify \
-        "ceremony/verification_key.json" \
-        "ceremony/public.json" \
-        "ceremony/proof.json"
+        "$CEREMONY_DIR/verification_key.json" \
+        "$CEREMONY_DIR/public.json" \
+        "$CEREMONY_DIR/proof.json"
 }
 
 case "${1:-}" in
