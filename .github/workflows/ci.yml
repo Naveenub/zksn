@@ -52,7 +52,7 @@ jobs:
         # NOT --deny warnings until v1.0 — known stubs produce warnings
 
   # ============================================================
-  # Job 2: Security audit (non-blocking during pre-alpha)
+  # Job 2: Security audit
   # ============================================================
   audit:
     name: Security Audit
@@ -65,6 +65,9 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Update reqwest (resolves RUSTSEC-2026-0049 via rustls-webpki)
+        run: cargo update -p reqwest
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
