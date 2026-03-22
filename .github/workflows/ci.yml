@@ -67,7 +67,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Update reqwest (resolves RUSTSEC-2026-0049 via rustls-webpki)
-        run: cargo update -p reqwest
+        run: cargo update -p rustls-webpki
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
