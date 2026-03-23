@@ -96,24 +96,24 @@ console.log(`  membershipRoot : ${REAL_MEMBERSHIP_ROOT}`);
 const alphax = vk.vk_alpha_1[0];
 const alphay = vk.vk_alpha_1[1];
 
-// vk_beta_2: [[x_im, x_re], [y_im, y_re], [1, 0]]
-// snarkjs VK stores Fp2 as [imaginary, real] already (opposite of proof.json)
-const betax1 = vk.vk_beta_2[0][0];   // imaginary
-const betax2 = vk.vk_beta_2[0][1];   // real
-const betay1 = vk.vk_beta_2[1][0];
-const betay2 = vk.vk_beta_2[1][1];
+// vk_beta_2 / gamma_2 / delta_2: snarkjs VK stores Fp2 as [imaginary, real].
+// Solidity constants use: x1 = real ([1]), x2 = imaginary ([0]).
+const betax1 = vk.vk_beta_2[0][1];   // real   → betax1
+const betax2 = vk.vk_beta_2[0][0];   // imag   → betax2
+const betay1 = vk.vk_beta_2[1][1];
+const betay2 = vk.vk_beta_2[1][0];
 
 // vk_gamma_2: same layout
-const gammax1 = vk.vk_gamma_2[0][0];
-const gammax2 = vk.vk_gamma_2[0][1];
-const gammay1 = vk.vk_gamma_2[1][0];
-const gammay2 = vk.vk_gamma_2[1][1];
+const gammax1 = vk.vk_gamma_2[0][1];
+const gammax2 = vk.vk_gamma_2[0][0];
+const gammay1 = vk.vk_gamma_2[1][1];
+const gammay2 = vk.vk_gamma_2[1][0];
 
 // vk_delta_2: same layout
-const deltax1 = vk.vk_delta_2[0][0];
-const deltax2 = vk.vk_delta_2[0][1];
-const deltay1 = vk.vk_delta_2[1][0];
-const deltay2 = vk.vk_delta_2[1][1];
+const deltax1 = vk.vk_delta_2[0][1];
+const deltax2 = vk.vk_delta_2[0][0];
+const deltay1 = vk.vk_delta_2[1][1];
+const deltay2 = vk.vk_delta_2[1][0];
 
 // IC[i]: [x, y, 1]
 const IC = vk.IC;
