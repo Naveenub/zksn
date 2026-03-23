@@ -114,66 +114,116 @@ The network achieves this through five orthogonal, independently verifiable mech
 ```
 zksn/
 ├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md
+│   │   └── feature_request.md
 │   ├── workflows/
 │   │   ├── ci.yml                     # Rust · Security Audit · Governance · Ceremony
 │   │   └── ceremony_mainnet.yml       # Automated pot28 trusted setup
 │   └── PULL_REQUEST_TEMPLATE.md
 ├── ceremony/
 │   ├── ATTESTATION.md                 # pot28 contribution hashes + SHA256 fingerprints
-│   ├── verification_key.json          # Groth16 VK (Hermez pot28, 1000+ contributors)
-│   ├── proof.json / public.json       # Ceremony test proof
-│   └── input.json                     # Ceremony test vector
+│   ├──input.json                     # Ceremony test vector
+│   ├──proof.json                     # Ceremony test proof
+│   ├──public.json
+│   └── verification_key.json          # Groth16 VK (Hermez pot28, 1000+ contributors)
 ├── circuits/
 │   └── MembershipVote.circom          # Groth16 circuit: depth-20 Merkle + nullifier (depth=20)
 ├── client/
-│   ├── cli/main.rs                    # zksn CLI: identity · send · receive · --testnet · --listen
-│   └── src/
-│       ├── config.rs                  # ClientConfig + yggdrasil_only
-│       ├── lib.rs                     # ZksnClient API + Yggdrasil enforcement
-│       ├── receive.rs                 # TCP listener · decrypt · deliver
-│       ├── route.rs                   # RouteSelector — DHT-based hop selection
-│       └── send.rs                    # Sphinx build · PaymentEnvelope inject
+│   ├── cli/
+│   │   └── main.rs                    # zksn CLI: identity · send · receive · --testnet · --listen
+│   ├── src/
+│   │   ├── config.rs                  # ClientConfig + yggdrasil_only
+│   │   ├── lib.rs                     # ZksnClient API + Yggdrasil enforcement
+│   │   ├── receive.rs                 # TCP listener · decrypt · deliver
+│   │   ├── route.rs                   # RouteSelector — DHT-based hop selection
+│   │   └── send.rs                    # Sphinx build · PaymentEnvelope inject
+│   ├── Cargo.toml
+│   └── README.md
 ├── crypto/
-│   └── src/
-│       ├── identity.rs                # Ed25519 keypair
-│       ├── noise.rs                   # Noise_XX mutual auth
-│       ├── sphinx.rs                  # Sphinx 2048B onion packets · per-hop key blinding
-│       └── zkp.rs                     # Merkle membership · nullifiers
+│   ├── src/
+│   │   ├── identity.rs                # Ed25519 keypair
+│   │   ├── lib.rs
+│   │   ├── noise.rs                   # Noise_XX mutual auth
+│   │   ├── sphinx.rs                  # Sphinx 2048B onion packets · per-hop key blinding
+│   │   └── zkp.rs                     # Merkle membership · nullifiers
+│   └── Cargo.toml
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── LEGAL.md
+│   ├── ROADMAP.md
+│   └── THREAT_MODEL.md
 ├── economic/
-│   └── src/
-│       ├── cashu.rs                   # NUT-00 blind-DH · hash_to_curve · B_=Y+r·G · C=C_-r·K
-│       └── mint.rs                    # MintClient NUT-01/03/05/07 · NodeWallet · MeltManager
+│   ├──  src/
+│   │   ├── cashu.rs                   # NUT-00 blind-DH · hash_to_curve · B_=Y+r·G · C=C_-r·K
+│   │   ├── lib.rs
+│   │   ├── mint.rs                    # MintClient NUT-01/03/05/07 · NodeWallet · MeltManager
+│   │   ├── monero.rs
+│   │   └── token.rs
+│   ├── Cargo.toml
+│   └── README.md
 ├── governance/
 │   ├── contracts/
 │   │   ├── Groth16Verifier.sol        # BN254 pairing · pot28 VK (depth-20, 1000+ contributors)
+│   │   ├── IVerifier.sol
+│   │   ├── MockVerifier.sol
 │   │   ├── PoseidonHasher.sol         # circomlibjs bytecode · hashLeaf/hashNullifier/hashNode
 │   │   └── ZKSNGovernance.sol         # DAO · ZK voting · 7-day period · 2-day timelock
-│   └── test/
-│       └── ZKSNGovernance.t.sol       # 47 tests: governance lifecycle + exact Poseidon vectors
+│   ├── scripts/
+│   │   └── Deploy.s.sol
+│   ├── test/
+│   │   └── ZKSNGovernance.t.sol       # 47 tests: governance lifecycle + exact Poseidon vectors
+│   ├── foundry.toml
+│   └── README.md
 ├── infra/
 │   ├── docker/
-│   │   ├── docker-compose.yml         # 7-service devnet: 3 nodes + Yggdrasil + i2pd + Cashu
-│   │   └── config/                    # Yggdrasil · i2pd · Cashu env configs
-│   └── nixos/node.nix                 # RAM-only NixOS · tmpfs · dm-verity · Yggdrasil
+│   │   ├── config/                    # Yggdrasil · i2pd · Cashu env configs
+│   │   │   ├── cashu.env
+│   │   │   ├── i2pd.conf
+│   │   │   ├── tunnels.conf
+│   │   │   ├── yggdrasil-peer.conf
+│   │   │   └── yggdrasil-seed.conf
+│   │   ├── Dockerfile.client
+│   │   ├── Dockerfile.mixnode
+│   │   └── docker-compose.yml         # 7-service devnet: 3 nodes + Yggdrasil + i2pd + Cashu
+│   └── nixos/
+│       ├── node.nix                 # RAM-only NixOS · tmpfs · dm-verity · Yggdrasil
+│       └── README.md
 ├── node/
-│   └── src/
-│       ├── config.rs                  # NodeConfig + yggdrasil_only + enforce_yggdrasil()
-│       ├── mixer.rs                   # Poisson delay pool · Exp(λ) sampling
-│       ├── network.rs                 # is_yggdrasil() · check_bind() · check_peer() — 200::/7
-│       ├── node.rs                    # TCP listener · Yggdrasil bind/accept enforcement
-│       ├── payment.rs                 # PaymentGuard NUT-07 · MeltManager threshold withdrawal
-│       └── peers.rs                   # Kademlia DHT · k-buckets · gossip · peer persistence
+│   ├── src/
+│   │   ├── config.rs                  # NodeConfig + yggdrasil_only + enforce_yggdrasil()
+│   │   ├── cover.rs
+│   │   ├── lib.rs
+│   │   ├── main.rs
+│   │   ├── metrics.rs
+│   │   ├── mixer.rs                   # Poisson delay pool · Exp(λ) sampling
+│   │   ├── network.rs                 # is_yggdrasil() · check_bind() · check_peer() — 200::/7
+│   │   ├── node.rs                    # TCP listener · Yggdrasil bind/accept enforcement
+│   │   ├── payment.rs                 # PaymentGuard NUT-07 · MeltManager threshold withdrawal
+│   │   ├── peers.rs                   # Kademlia DHT · k-buckets · gossip · peer persistence
+│   │   └── router.rs
+│   ├── Cargo.toml
+│   ├── node.toml.example
+│   └── README.md
 ├── scripts/
+│   ├── bootstrap-seed.sh
 │   ├── ceremony.sh                    # Full pot28 ceremony runbook
 │   ├── demo.sh                        # End-to-end local devnet (one command)
 │   ├── download_ptau.sh               # Hermez pot28 download + SHA256 verify
 │   ├── encode_proof.js                # EIP-197 proof encoding for Solidity
+│   ├── gen-identity.sh
 │   ├── patch_ceremony.js              # Auto-patch Groth16Verifier.sol + test constants
 │   ├── tree.js                        # Sparse depth-20 Poseidon tree builder
 │   └── tree_ci.js                     # Stateless tree_ci for ceremony workflow
-├── Cargo.toml                         # Workspace: node · client · crypto · economic
+├── .gitignore
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
+├── Cargo.lock
+├── Cargo.toml                         # Workspace: node · client · crypto · economic
+├── flake.nix
+├── Justfile
+├── LICENSE
+├── README.md
 ├── RELEASE.md                         # Latest release notes
 └── SECURITY.md
 ```
