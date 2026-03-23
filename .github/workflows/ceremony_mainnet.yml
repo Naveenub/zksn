@@ -48,7 +48,7 @@ on:
 env:
   NODE_VERSION: "22"
   PTAU_URL: "https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau"
-  PTAU_SHA256: "d0f7b4838fdb8a2b4e7e5e2fb0a8ae2e3cb2cfdce57aa5a00e5a24ab4583e4ee"
+  PTAU_SHA256: "3ef2ecc5b75d687048cf2d59195119b42fb07c5af639c5f283d84bfa69829e7f"
   PTAU_PATH: "ceremony/pot28_hez_final_15.ptau"
   CEREMONY_DIR: "ceremony"
   BUILD_DIR: "build"
