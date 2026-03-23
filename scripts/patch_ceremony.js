@@ -63,10 +63,23 @@ function write(p, content, original) {
 }
 
 function replaceConst(sol, name, value) {
-  // Matches: uint256 constant <name> = <anything>;
-  const re = new RegExp(`(uint256 constant ${name}\\s*=\\s*)([^;]+)(;)`, "g");
-  const result = sol.replace(re, `$1${value}$3`);
-  if (result === sol) throw new Error(`Constant not found: ${name}`);
+  // Line-by-line replacement — idempotent regardless of current value.
+  // Safe to re-run; works even if constant was already set by a prior ceremony.
+  const prefix = new RegExp(`^(\\s*uint256 constant ${name}\\s*=\\s*)`);
+  let found = false;
+  const result = sol.split("\n").map(line => {
+    if (prefix.test(line)) {
+      found = true;
+      const indentM = line.match(/^(\\s*)/); const indent = indentM ? indentM[1] : '';
+      return `${indent}uint256 constant ${name} = ${value};`;
+    }
+    return line;
+  }).join("\n");
+  if (!found) {
+    const idx = sol.indexOf(`constant ${name}`);
+    const ctx = idx >= 0 ? sol.slice(Math.max(0,idx-20), idx+60) : "(not present)";
+    throw new Error(`Constant not found: ${name}\n  context: ${ctx}`);
+  }
   return result;
 }
 
