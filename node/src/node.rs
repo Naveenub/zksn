@@ -1,5 +1,6 @@
 use crate::{
     config::NodeConfig,
+    network,
     cover::CoverTrafficGenerator,
     metrics::NodeMetrics,
     mixer::PoissonMixer,
@@ -30,6 +31,7 @@ pub struct MixNode {
 
 impl MixNode {
     pub async fn new(config: NodeConfig) -> Result<Self> {
+        network::check_bind(&config.network.listen_addr, config.enforce_yggdrasil())?;
         let listener = TcpListener::bind(&config.network.listen_addr).await?;
         info!("Listening on {}", config.network.listen_addr);
         Ok(Self { config, listener })
@@ -49,11 +51,12 @@ impl MixNode {
             .keys
             .key_store_path
             .replace("identity.key", "peers.json");
-        let discovery = Arc::new(PeerDiscovery::new(
+        let discovery = Arc::new(PeerDiscovery::new_with_enforcement(
             self.config.network.listen_addr.clone(),
             own_pubkey,
             self.config.network.bootstrap_peers.clone(),
             Some(peer_store),
+            self.config.enforce_yggdrasil(),
         ));
         let peers: Arc<PeerTable> = Arc::clone(&discovery.table);
 
@@ -62,9 +65,10 @@ impl MixNode {
             disc_clone.run().await;
         });
 
-        let payment_guard = Arc::new(PaymentGuard::new(
+        let payment_guard = Arc::new(PaymentGuard::new_with_yggdrasil(
             &self.config.economic,
             self.config.testnet,
+            self.config.enforce_yggdrasil(),
         ));
 
         let mix_cfg = self.config.mixing.clone();
@@ -139,6 +143,18 @@ async fn handle_conn(
     payment_guard: Arc<PaymentGuard>,
 ) -> Result<()> {
     use tokio::io::AsyncReadExt;
+
+    // Reject connections from outside the Yggdrasil address space.
+    if payment_guard.enforce_yggdrasil() {
+        if let Ok(peer_addr) = stream.peer_addr() {
+            if !network::is_yggdrasil(&peer_addr.ip()) {
+                anyhow::bail!(
+                    "Rejected inbound connection from non-Yggdrasil address {peer_addr}. \
+                     Set network.yggdrasil_only = false in node.toml to allow non-Yggdrasil peers."
+                );
+            }
+        }
+    }
 
     let mut peek = [0u8; 4];
     stream.read_exact(&mut peek).await?;
@@ -268,6 +284,7 @@ mod tests {
     async fn test_node_binds() {
         let mut c = NodeConfig::default();
         c.network.listen_addr = "127.0.0.1:0".to_string();
+        c.network.yggdrasil_only = false;
         assert!(MixNode::new(c).await.is_ok());
     }
 
@@ -275,7 +292,28 @@ mod tests {
     async fn test_node_invalid_addr() {
         let mut c = NodeConfig::default();
         c.network.listen_addr = "999.999.999.999:9999".to_string();
+        c.network.yggdrasil_only = false;
         assert!(MixNode::new(c).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_node_rejects_non_yggdrasil_bind() {
+        let mut c = NodeConfig::default();
+        c.network.listen_addr = "127.0.0.1:0".to_string();
+        c.network.yggdrasil_only = true;
+        c.testnet = false;
+        let err = MixNode::new(c).await.unwrap_err();
+        assert!(err.to_string().contains("200::/7"));
+        assert!(err.to_string().contains("yggdrasil_only"));
+    }
+
+    #[tokio::test]
+    async fn test_node_testnet_bypasses_yggdrasil() {
+        let mut c = NodeConfig::default();
+        c.network.listen_addr = "127.0.0.1:0".to_string();
+        c.network.yggdrasil_only = true;
+        c.testnet = true;
+        assert!(MixNode::new(c).await.is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

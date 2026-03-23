@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zksn_crypto::identity::ZksnIdentity;
-use zksn_node::peers::{PeerDiscovery, PeerInfo};
+use zksn_node::{
+    network,
+    peers::{PeerDiscovery, PeerInfo},
+};
 
 use crate::route::RouteSelector;
 
@@ -26,6 +29,12 @@ pub struct ZksnClient {
 
 impl ZksnClient {
     pub async fn new(config: ClientConfig) -> Result<Self> {
+        // Enforce Yggdrasil 200::/7 on listen_addr and entry_node.
+        // A client binding or connecting outside Yggdrasil exposes the real IP.
+        let enforce = config.yggdrasil_only;
+        network::check_bind(&config.listen_addr, enforce)?;
+        network::check_peer(&config.entry_node, enforce)?;
+
         let identity = if let Some(ref path) = config.key_path {
             let bytes = std::fs::read(path)?;
             let mut key = [0u8; 32];
@@ -39,11 +48,12 @@ impl ZksnClient {
         let secret = StaticSecret::from(routing_privkey);
         let routing_pubkey: [u8; 32] = X25519PublicKey::from(&secret).to_bytes();
 
-        let discovery = Arc::new(PeerDiscovery::new(
+        let discovery = Arc::new(PeerDiscovery::new_with_enforcement(
             config.listen_addr.clone(),
             routing_pubkey,
             config.bootstrap_peers.clone(),
             config.peer_store_path.clone(),
+            config.yggdrasil_only,
         ));
 
         let disc_run = Arc::clone(&discovery);
@@ -118,10 +128,52 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_creates_with_default_config() {
-        let config = ClientConfig::default();
+        let mut config = ClientConfig::default();
+        config.yggdrasil_only = false; // disable for CI (no Yggdrasil)
         let client = ZksnClient::new(config).await.unwrap();
         assert_eq!(client.routing_pubkey_hex().len(), 64);
         assert_eq!(client.fingerprint().len(), 16);
+    }
+
+    #[tokio::test]
+    async fn test_client_rejects_non_yggdrasil_listen_addr() {
+        let config = ClientConfig {
+            listen_addr: "127.0.0.1:0".to_string(),
+            yggdrasil_only: true,
+            ..ClientConfig::default()
+        };
+        let err = ZksnClient::new(config).await.unwrap_err();
+        assert!(err.to_string().contains("200::/7"));
+    }
+
+    #[tokio::test]
+    async fn test_client_rejects_non_yggdrasil_entry_node() {
+        let config = ClientConfig {
+            listen_addr: "[200::1]:0".to_string(),
+            entry_node: "192.168.1.1:9001".to_string(),
+            yggdrasil_only: true,
+            ..ClientConfig::default()
+        };
+        let err = ZksnClient::new(config).await.unwrap_err();
+        assert!(err.to_string().contains("200::/7"));
+    }
+
+    #[tokio::test]
+    async fn test_client_accepts_yggdrasil_listen_addr() {
+        let config = ClientConfig {
+            listen_addr: "[200::1]:0".to_string(),
+            entry_node: "[200::2]:9001".to_string(),
+            yggdrasil_only: true,
+            ..ClientConfig::default()
+        };
+        // The check_bind should pass. Actual bind may fail in CI without Yggdrasil iface.
+        match ZksnClient::new(config).await {
+            Ok(_) => {}
+            Err(e) => {
+                assert!(!e.to_string().contains("200::/7"),
+                    "should not be rejected by Yggdrasil check: {e}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -134,10 +186,12 @@ mod tests {
 
         let cfg1 = ClientConfig {
             key_path: Some(key_path.clone()),
+            yggdrasil_only: false,
             ..Default::default()
         };
         let cfg2 = ClientConfig {
             key_path: Some(key_path),
+            yggdrasil_only: false,
             ..Default::default()
         };
 
@@ -148,8 +202,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_different_identities_have_different_routing_keys() {
-        let cfg1 = ClientConfig::default();
-        let cfg2 = ClientConfig::default();
+        let cfg1 = ClientConfig { yggdrasil_only: false, ..ClientConfig::default() };
+        let cfg2 = ClientConfig { yggdrasil_only: false, ..ClientConfig::default() };
         let c1 = ZksnClient::new(cfg1).await.unwrap();
         let c2 = ZksnClient::new(cfg2).await.unwrap();
         assert_ne!(c1.routing_pubkey(), c2.routing_pubkey());
@@ -160,6 +214,7 @@ mod tests {
         let config = ClientConfig {
             entry_node: "127.0.0.1:19999".to_string(),
             bootstrap_peers: vec![],
+            yggdrasil_only: false,
             ..Default::default()
         };
         let client = ZksnClient::new(config).await.unwrap();
@@ -171,6 +226,7 @@ mod tests {
     async fn test_receive_binds_successfully() {
         let config = ClientConfig {
             listen_addr: "127.0.0.1:0".to_string(),
+            yggdrasil_only: false,
             ..Default::default()
         };
         let client = ZksnClient::new(config).await.unwrap();

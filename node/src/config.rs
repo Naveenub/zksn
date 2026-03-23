@@ -22,6 +22,15 @@ impl NodeConfig {
         config.identity = IdentityHolder::load_or_generate(&config.keys)?;
         Ok(config)
     }
+
+    /// Returns true if Yggdrasil enforcement is active.
+    ///
+    /// Enforcement is disabled when:
+    ///   - `testnet = true`  (development / CI)
+    ///   - `network.yggdrasil_only = false`  (explicit opt-out)
+    pub fn enforce_yggdrasil(&self) -> bool {
+        self.network.yggdrasil_only && !self.testnet
+    }
 }
 
 impl Default for NodeConfig {
@@ -43,7 +52,17 @@ pub struct NetworkConfig {
     pub max_peers: usize,
     pub connect_timeout_ms: u64,
     pub bootstrap_peers: Vec<String>,
+    /// Enforce that all addresses (bind + peers) fall inside the Yggdrasil
+    /// `200::/7` prefix.  Set `false` only for development / testnet.
+    /// Default: `true`.
+    #[serde(default = "default_yggdrasil_only")]
+    pub yggdrasil_only: bool,
 }
+
+fn default_yggdrasil_only() -> bool {
+    true
+}
+
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
@@ -51,6 +70,7 @@ impl Default for NetworkConfig {
             max_peers: 64,
             connect_timeout_ms: 5_000,
             bootstrap_peers: vec![],
+            yggdrasil_only: true,
         }
     }
 }
@@ -187,23 +207,54 @@ mod tests {
         let c = NodeConfig::default();
         assert_eq!(c.mixing.poisson_lambda_ms, 200);
         assert!(!c.testnet);
+        assert!(c.network.yggdrasil_only);
     }
+
+    #[test]
+    fn test_enforce_yggdrasil_logic() {
+        let mut c = NodeConfig::default();
+        // Default: yggdrasil_only=true, testnet=false → enforce
+        assert!(c.enforce_yggdrasil());
+
+        // testnet=true → no enforcement regardless of yggdrasil_only
+        c.testnet = true;
+        assert!(!c.enforce_yggdrasil());
+
+        // yggdrasil_only=false, testnet=false → no enforcement
+        c.testnet = false;
+        c.network.yggdrasil_only = false;
+        assert!(!c.enforce_yggdrasil());
+    }
+
     #[test]
     fn test_identity_unique() {
         let a = IdentityHolder::generate();
         let b = IdentityHolder::generate();
         assert_ne!(a.fingerprint(), b.fingerprint());
     }
+
     #[test]
     fn test_identity_clone() {
         let a = IdentityHolder::generate();
         assert_eq!(a.fingerprint(), a.clone().fingerprint());
     }
+
     #[test]
     fn test_load_from_file() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(tmp, "[network]\nlisten_addr=\"127.0.0.1:9001\"\nmax_peers=32\nconnect_timeout_ms=3000\nbootstrap_peers=[]\n[mixing]\npoisson_lambda_ms=500\ncover_traffic_rate=2\nmax_queue_depth=5000\nloop_cover_fraction=0.4\n[economic]\ncashu_mint_url=\"http://localhost:3338\"\nmin_token_value=1\nmonero_rpc_url=\"http://127.0.0.1:18082\"\nredemption_batch_size=50\n[keys]\nkey_store_path=\"/tmp/k\"\npersist_identity=false").unwrap();
+        writeln!(tmp, "[network]\nlisten_addr=\"127.0.0.1:9001\"\nmax_peers=32\nconnect_timeout_ms=3000\nbootstrap_peers=[]\nyggdrasil_only=false\n[mixing]\npoisson_lambda_ms=500\ncover_traffic_rate=2\nmax_queue_depth=5000\nloop_cover_fraction=0.4\n[economic]\ncashu_mint_url=\"http://localhost:3338\"\nmin_token_value=1\nmonero_rpc_url=\"http://127.0.0.1:18082\"\nredemption_batch_size=50\n[keys]\nkey_store_path=\"/tmp/k\"\npersist_identity=false").unwrap();
         let c = NodeConfig::load(tmp.path().to_str().unwrap()).unwrap();
         assert_eq!(c.mixing.poisson_lambda_ms, 500);
+        assert!(!c.network.yggdrasil_only);
+        assert!(!c.enforce_yggdrasil());
+    }
+
+    #[test]
+    fn test_yggdrasil_only_defaults_true_when_absent_from_toml() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        // No yggdrasil_only field → serde default kicks in
+        writeln!(tmp, "[network]\nlisten_addr=\"[200::1]:9001\"\nmax_peers=32\nconnect_timeout_ms=3000\nbootstrap_peers=[]\n[mixing]\npoisson_lambda_ms=200\ncover_traffic_rate=5\nmax_queue_depth=10000\nloop_cover_fraction=0.3\n[economic]\ncashu_mint_url=\"http://localhost:3338\"\nmin_token_value=1\nmonero_rpc_url=\"http://127.0.0.1:18082\"\nredemption_batch_size=100\n[keys]\nkey_store_path=\"/tmp/k\"\npersist_identity=false").unwrap();
+        let c = NodeConfig::load(tmp.path().to_str().unwrap()).unwrap();
+        assert!(c.network.yggdrasil_only, "yggdrasil_only must default to true");
     }
 }

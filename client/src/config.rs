@@ -16,6 +16,15 @@ pub struct ClientConfig {
     pub bootstrap_peers: Vec<String>,
     /// Path to persist the peer table between sessions.
     pub peer_store_path: Option<String>,
+    /// Enforce that `listen_addr` and `entry_node` are in the Yggdrasil
+    /// `200::/7` prefix.  Set `false` for development / testnet.
+    /// Default: `true`.
+    #[serde(default = "default_yggdrasil_only")]
+    pub yggdrasil_only: bool,
+}
+
+fn default_yggdrasil_only() -> bool {
+    true
 }
 
 impl Default for ClientConfig {
@@ -28,6 +37,7 @@ impl Default for ClientConfig {
             listen_addr: "[::1]:9002".to_string(),
             bootstrap_peers: vec![],
             peer_store_path: None,
+            yggdrasil_only: true,
         }
     }
 }

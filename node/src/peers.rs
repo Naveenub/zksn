@@ -274,6 +274,8 @@ pub struct PeerDiscovery {
     bootstrap_peers: Vec<String>,
     pub table: Arc<PeerTable>,
     peer_store_path: Option<String>,
+    /// When true, refuse to connect to any address outside 200::/7.
+    enforce_yggdrasil: bool,
 }
 
 impl PeerDiscovery {
@@ -283,12 +285,23 @@ impl PeerDiscovery {
         bootstrap_peers: Vec<String>,
         peer_store_path: Option<String>,
     ) -> Self {
+        Self::new_with_enforcement(own_addr, own_pubkey, bootstrap_peers, peer_store_path, false)
+    }
+
+    pub fn new_with_enforcement(
+        own_addr: String,
+        own_pubkey: [u8; 32],
+        bootstrap_peers: Vec<String>,
+        peer_store_path: Option<String>,
+        enforce_yggdrasil: bool,
+    ) -> Self {
         Self {
             own_addr,
             own_pubkey,
             bootstrap_peers,
             table: Arc::new(PeerTable::new(own_pubkey)),
             peer_store_path,
+            enforce_yggdrasil,
         }
     }
 
@@ -383,6 +396,7 @@ impl PeerDiscovery {
     }
 
     pub async fn connect_and_exchange(&self, addr: &str) -> Result<usize> {
+        crate::network::check_peer(addr, self.enforce_yggdrasil)?;
         let mut stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
             .await
             .map_err(|_| anyhow!("timeout"))?
@@ -414,6 +428,7 @@ impl PeerDiscovery {
     }
 
     pub async fn find_node(&self, addr: &str, target: [u8; 32]) -> Result<Vec<PeerInfo>> {
+        crate::network::check_peer(addr, self.enforce_yggdrasil)?;
         let mut stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
             .await
             .map_err(|_| anyhow!("timeout"))?
@@ -638,5 +653,49 @@ mod tests {
         table2.load(&path).await;
         assert_eq!(table2.len().await, 2);
         assert!(table2.resolve(&[1u8; 32]).await.is_some());
+    }
+
+    // ── Yggdrasil enforcement ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_connect_rejects_non_yggdrasil_when_enforced() {
+        let disc = Arc::new(PeerDiscovery::new_with_enforcement(
+            "[200::1]:9001".into(),
+            [0xAAu8; 32],
+            vec![],
+            None,
+            true, // enforce
+        ));
+        // 192.168.1.1 is IPv4 — not in Yggdrasil space
+        let err = disc.connect_and_exchange("192.168.1.1:9001").await.unwrap_err();
+        assert!(err.to_string().contains("200::/7"));
+    }
+
+    #[tokio::test]
+    async fn test_connect_allows_non_yggdrasil_when_not_enforced() {
+        let disc = Arc::new(PeerDiscovery::new_with_enforcement(
+            "127.0.0.1:9001".into(),
+            [0xAAu8; 32],
+            vec![],
+            None,
+            false, // no enforcement
+        ));
+        // Connection will fail (nothing listening) but should not be rejected
+        // by the Yggdrasil check — it should return a network error instead.
+        let err = disc.connect_and_exchange("127.0.0.1:1").await.unwrap_err();
+        assert!(!err.to_string().contains("200::/7"), "should not be a Yggdrasil error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_find_node_rejects_non_yggdrasil_when_enforced() {
+        let disc = Arc::new(PeerDiscovery::new_with_enforcement(
+            "[200::1]:9001".into(),
+            [0xAAu8; 32],
+            vec![],
+            None,
+            true,
+        ));
+        let err = disc.find_node("10.0.0.1:9001", [0u8; 32]).await.unwrap_err();
+        assert!(err.to_string().contains("200::/7"));
     }
 }

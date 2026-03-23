@@ -36,6 +36,7 @@ use crate::config::EconomicConfig;
 /// Shared payment enforcement state.
 pub struct PaymentGuard {
     testnet: bool,
+    enforce_ygg: bool,
     min_value: u64,
     mint: MintClient,
     /// Secrets of proofs seen during this session — prevents double-spend
@@ -47,6 +48,10 @@ pub struct PaymentGuard {
 
 impl PaymentGuard {
     pub fn new(config: &EconomicConfig, testnet: bool) -> Self {
+        Self::new_with_yggdrasil(config, testnet, !testnet)
+    }
+
+    pub fn new_with_yggdrasil(config: &EconomicConfig, testnet: bool, enforce_ygg: bool) -> Self {
         let wallet = if let Some(ref path) = config.wallet_store_path {
             NodeWallet::new_persistent(path)
         } else {
@@ -54,11 +59,17 @@ impl PaymentGuard {
         };
         Self {
             testnet,
+            enforce_ygg: enforce_ygg && !testnet,
             min_value: config.min_token_value,
             mint: MintClient::new(config.cashu_mint_url.clone()),
             seen_secrets: Arc::new(Mutex::new(HashSet::new())),
             wallet,
         }
+    }
+
+    /// Returns true if Yggdrasil address enforcement is active.
+    pub fn enforce_yggdrasil(&self) -> bool {
+        self.enforce_ygg
     }
 
     /// Current node wallet balance in satoshis.

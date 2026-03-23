@@ -2,6 +2,7 @@ pub mod config;
 pub mod cover;
 pub mod metrics;
 pub mod mixer;
+pub mod network;
 pub mod node;
 pub mod payment;
 pub mod peers;
