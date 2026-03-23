@@ -302,7 +302,7 @@ mod tests {
         c.network.listen_addr = "127.0.0.1:0".to_string();
         c.network.yggdrasil_only = true;
         c.testnet = false;
-        let err = MixNode::new(c).await.unwrap_err();
+        let err = MixNode::new(c).await.err().expect("should fail");
         assert!(err.to_string().contains("200::/7"));
         assert!(err.to_string().contains("yggdrasil_only"));
     }

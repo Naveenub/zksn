@@ -142,7 +142,7 @@ mod tests {
             yggdrasil_only: true,
             ..ClientConfig::default()
         };
-        let err = ZksnClient::new(config).await.unwrap_err();
+        let err = ZksnClient::new(config).await.err().expect("should fail");
         assert!(err.to_string().contains("200::/7"));
     }
 
@@ -154,7 +154,7 @@ mod tests {
             yggdrasil_only: true,
             ..ClientConfig::default()
         };
-        let err = ZksnClient::new(config).await.unwrap_err();
+        let err = ZksnClient::new(config).await.err().expect("should fail");
         assert!(err.to_string().contains("200::/7"));
     }
 
