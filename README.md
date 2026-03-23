@@ -5,7 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Status: Pre-Release](https://img.shields.io/badge/Status-Pre--Release-orange.svg)](https://github.com/Naveenob/zksn/releases/latest)
-[![CI](https://github.com/Naveenob/zksn/actions/workflows/ci.yml/badge.svg)](https://github.com/Naveenob/zksn/actions/workflows/ci.yml)
+[![CI](https://github.com/Naveenob/zksn/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Naveenob/zksn/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-blue.svg)](https://soliditylang.org/)
 [![Tests](https://img.shields.io/badge/Tests-227%20passing-brightgreen.svg)](https://github.com/Naveenob/zksn/actions)
