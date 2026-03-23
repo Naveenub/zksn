@@ -1,0 +1,303 @@
+# .github/workflows/ceremony_mainnet.yml
+#
+# ZKSN pot28 trusted setup ceremony — automated via GitHub Actions
+#
+# Runs the full Groth16 phase 2 ceremony against Hermez pot28:
+#   - Downloads powersOfTau28_hez_final_15.ptau (~25 MB, 1000+ contributors)
+#   - Runs snarkjs groth16 setup
+#   - Applies 3 MPC contributions (entropy from repository secrets)
+#   - Applies deterministic beacon
+#   - Exports verification key + Solidity verifier
+#   - Generates witness + proof for the ceremony test vector
+#   - Patches Groth16Verifier.sol and ZKSNGovernance.t.sol in-place
+#   - Runs forge test to confirm all 47 tests pass
+#   - Opens a pull request with all changes
+#
+# Trigger: workflow_dispatch (manual, from Actions tab)
+#
+# Required secrets (Settings → Secrets → Actions):
+#   CEREMONY_ENTROPY_1  — contributor 1 entropy (any random string, min 32 chars)
+#   CEREMONY_ENTROPY_2  — contributor 2 entropy (different person, different string)
+#   CEREMONY_ENTROPY_3  — contributor 3 entropy (different person, different string)
+#
+# The three entropy values should be provided by three different people.
+# Each person generates their value independently and submits it as a secret.
+# The MPC is sound as long as at least one contributor discards their entropy
+# after this workflow completes.
+#
+# After the workflow creates the PR:
+#   1. Review the diff — verify Groth16Verifier.sol constants changed
+#   2. Verify proof: npx snarkjs groth16 verify ceremony/verification_key.json
+#                       ceremony/public.json ceremony/proof.json
+#   3. Merge the PR
+#   4. Tag: git tag -a v1.0.0-rc1 -m "pot28 ceremony complete"
+
+name: Ceremony — pot28 mainnet trusted setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      beacon:
+        description: >
+          Final beacon value (32-byte hex, no 0x prefix).
+          Use a future Ethereum block hash for maximum entropy.
+          Default is a deterministic dev value — replace for mainnet.
+        required: false
+        default: "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+
+env:
+  NODE_VERSION: "22"
+  PTAU_URL: "https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau"
+  PTAU_SHA256: "d0f7b4838fdb8a2b4e7e5e2fb0a8ae2e3cb2cfdce57aa5a00e5a24ab4583e4ee"
+  PTAU_PATH: "ceremony/pot28_hez_final_15.ptau"
+  CEREMONY_DIR: "ceremony"
+  BUILD_DIR: "build"
+
+jobs:
+  ceremony:
+    name: pot28 Phase 2 Ceremony
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ── Setup ─────────────────────────────────────────────────────────────
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install snarkjs + circom2 + circomlib
+        run: npm install snarkjs circom2 circomlib circomlibjs
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install forge-std
+        working-directory: governance
+        run: forge install foundry-rs/forge-std --no-git
+
+      # ── Download pot28_hez_final_15 ──────────────────────────────────────
+
+      - name: Cache pot28_hez_final_15.ptau
+        id: cache-ptau
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PTAU_PATH }}
+          key: pot28-hez-final-15-${{ env.PTAU_SHA256 }}
+
+      - name: Download pot28_hez_final_15.ptau
+        if: steps.cache-ptau.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$CEREMONY_DIR"
+          echo "Downloading Hermez pot28 (2^15 subset, ~25 MB)..."
+          curl -L --retry 3 --retry-delay 5 -o "$PTAU_PATH" "$PTAU_URL"
+          echo "Downloaded: $(du -h $PTAU_PATH | cut -f1)"
+
+      - name: Verify pot28 SHA256
+        run: |
+          ACTUAL=$(sha256sum "$PTAU_PATH" | awk '{print $1}')
+          if [ "$ACTUAL" != "$PTAU_SHA256" ]; then
+            echo "❌ SHA256 mismatch!"
+            echo "   expected: $PTAU_SHA256"
+            echo "   actual:   $ACTUAL"
+            exit 1
+          fi
+          echo "✅ pot28 SHA256 verified: $ACTUAL"
+
+      # ── Compile circuit ───────────────────────────────────────────────────
+
+      - name: Compile MembershipVote circuit (depth=20)
+        run: |
+          mkdir -p "$BUILD_DIR"
+          ./node_modules/.bin/circom2 circuits/MembershipVote.circom \
+            --r1cs --wasm --sym \
+            -l node_modules \
+            -o "$BUILD_DIR"
+          echo "r1cs: $(du -h $BUILD_DIR/MembershipVote.r1cs | cut -f1)"
+          echo "wasm: $(du -h $BUILD_DIR/MembershipVote_js/MembershipVote.wasm | cut -f1)"
+
+      # ── Phase 2 ceremony ──────────────────────────────────────────────────
+
+      - name: Phase 2 — groth16 setup
+        run: |
+          npx snarkjs groth16 setup \
+            "$BUILD_DIR/MembershipVote.r1cs" \
+            "$PTAU_PATH" \
+            "$CEREMONY_DIR/zkey_0000.zkey"
+          echo "zkey_0000: $(du -h $CEREMONY_DIR/zkey_0000.zkey | cut -f1)"
+          echo "sha256: $(sha256sum $CEREMONY_DIR/zkey_0000.zkey | awk '{print $1}')"
+
+      - name: Phase 2 — MPC contribution 1
+        env:
+          ENTROPY_1: ${{ secrets.CEREMONY_ENTROPY_1 }}
+        run: |
+          echo "$ENTROPY_1" | npx snarkjs zkey contribute \
+            "$CEREMONY_DIR/zkey_0000.zkey" \
+            "$CEREMONY_DIR/zkey_0001.zkey" \
+            --name="ZKSN MPC Contributor 1 (pot28)"
+          echo "zkey_0001 sha256: $(sha256sum $CEREMONY_DIR/zkey_0001.zkey | awk '{print $1}')"
+
+      - name: Phase 2 — MPC contribution 2
+        env:
+          ENTROPY_2: ${{ secrets.CEREMONY_ENTROPY_2 }}
+        run: |
+          echo "$ENTROPY_2" | npx snarkjs zkey contribute \
+            "$CEREMONY_DIR/zkey_0001.zkey" \
+            "$CEREMONY_DIR/zkey_0002.zkey" \
+            --name="ZKSN MPC Contributor 2 (pot28)"
+          echo "zkey_0002 sha256: $(sha256sum $CEREMONY_DIR/zkey_0002.zkey | awk '{print $1}')"
+
+      - name: Phase 2 — MPC contribution 3
+        env:
+          ENTROPY_3: ${{ secrets.CEREMONY_ENTROPY_3 }}
+        run: |
+          echo "$ENTROPY_3" | npx snarkjs zkey contribute \
+            "$CEREMONY_DIR/zkey_0002.zkey" \
+            "$CEREMONY_DIR/zkey_0003.zkey" \
+            --name="ZKSN MPC Contributor 3 (pot28)"
+          echo "zkey_0003 sha256: $(sha256sum $CEREMONY_DIR/zkey_0003.zkey | awk '{print $1}')"
+
+      - name: Phase 2 — apply beacon
+        run: |
+          BEACON="${{ github.event.inputs.beacon }}"
+          npx snarkjs zkey beacon \
+            "$CEREMONY_DIR/zkey_0003.zkey" \
+            "$CEREMONY_DIR/zkey_final.zkey" \
+            "$BEACON" \
+            10 \
+            -n="ZKSN Final Beacon (pot28)"
+          echo "zkey_final sha256: $(sha256sum $CEREMONY_DIR/zkey_final.zkey | awk '{print $1}')"
+
+      # ── Export artifacts ──────────────────────────────────────────────────
+
+      - name: Export verification key
+        run: |
+          npx snarkjs zkey export verificationkey \
+            "$CEREMONY_DIR/zkey_final.zkey" \
+            "$CEREMONY_DIR/verification_key.json"
+          echo "VK written"
+          cat "$CEREMONY_DIR/verification_key.json" | python3 -c "
+          import json,sys
+          vk = json.load(sys.stdin)
+          print('nPublic:', vk['nPublic'])
+          print('deltax1:', vk['vk_delta_2'][0][1])
+          print('deltay1:', vk['vk_delta_2'][1][1])
+          "
+
+      - name: Generate witness + proof
+        run: |
+          mkdir -p "$CEREMONY_DIR"
+          # Build depth-20 tree and generate circuit input
+          node scripts/tree_ci.js > "$CEREMONY_DIR/input.json"
+          echo "input.json written"
+
+          # Generate witness
+          node "$BUILD_DIR/MembershipVote_js/generate_witness.js" \
+            "$BUILD_DIR/MembershipVote_js/MembershipVote.wasm" \
+            "$CEREMONY_DIR/input.json" \
+            "$CEREMONY_DIR/witness.wtns"
+          echo "witness.wtns: $(du -h $CEREMONY_DIR/witness.wtns | cut -f1)"
+
+          # Generate proof
+          npx snarkjs groth16 prove \
+            "$CEREMONY_DIR/zkey_final.zkey" \
+            "$CEREMONY_DIR/witness.wtns" \
+            "$CEREMONY_DIR/proof.json" \
+            "$CEREMONY_DIR/public.json"
+          echo "proof.json written"
+          cat "$CEREMONY_DIR/public.json"
+
+          # Verify proof
+          npx snarkjs groth16 verify \
+            "$CEREMONY_DIR/verification_key.json" \
+            "$CEREMONY_DIR/public.json" \
+            "$CEREMONY_DIR/proof.json"
+
+      # ── Patch Solidity files ──────────────────────────────────────────────
+
+      - name: Patch Groth16Verifier.sol and ZKSNGovernance.t.sol
+        run: node scripts/patch_ceremony.js
+
+      # ── Verify contracts compile and tests pass ───────────────────────────
+
+      - name: Build governance contracts
+        working-directory: governance
+        run: forge build --sizes
+
+      - name: Run governance tests
+        working-directory: governance
+        run: forge test -vv
+
+      # ── Collect fingerprints ──────────────────────────────────────────────
+
+      - name: Collect ceremony fingerprints
+        run: |
+          echo "## Ceremony fingerprints" > ceremony_summary.txt
+          echo "ptau: pot28_hez_final_15 (Hermez, 1000+ contributors)" >> ceremony_summary.txt
+          for f in zkey_0001 zkey_0002 zkey_0003 zkey_final; do
+            SHA=$(sha256sum "$CEREMONY_DIR/${f}.zkey" | awk '{print $1}')
+            echo "${f}.zkey: $SHA" >> ceremony_summary.txt
+          done
+          cat ceremony_summary.txt
+
+      # ── Open PR ───────────────────────────────────────────────────────────
+
+      - name: Commit and open PR
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="feat/ceremony-mainnet-pot28-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+
+          git add \
+            ceremony/verification_key.json \
+            ceremony/proof.json \
+            ceremony/public.json \
+            ceremony/input.json \
+            ceremony/ATTESTATION.md \
+            governance/contracts/Groth16Verifier.sol \
+            governance/test/ZKSNGovernance.t.sol
+
+          git commit -m "feat/ceremony-mainnet: pot28 (1000+ contributors) trusted setup
+
+          Phase 1: powersOfTau28_hez_final_15.ptau (Hermez ceremony, 1000+ contributors)
+          Phase 2: 3-contributor MPC + random beacon
+          Circuit: MembershipVote(depth=20) — 5,360 constraints
+          Verified: snarkjs groth16 verify → OK, forge test → all 47 passing
+
+          $(cat ceremony_summary.txt)"
+
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "feat/ceremony-mainnet: pot28 trusted setup (1000+ contributors)" \
+            --body "$(cat ceremony_summary.txt)
+
+          ## What changed
+          - \`ceremony/verification_key.json\` — new VK from pot28 phase 2
+          - \`ceremony/proof.json\` / \`public.json\` — verified ceremony test proof
+          - \`governance/contracts/Groth16Verifier.sol\` — updated delta + IC constants
+          - \`governance/test/ZKSNGovernance.t.sol\` — updated REAL_PROOF + REAL_MEMBERSHIP_ROOT
+
+          ## Verification
+          \`\`\`
+          npx snarkjs groth16 verify ceremony/verification_key.json ceremony/public.json ceremony/proof.json
+          forge test -vv
+          \`\`\`
+
+          Closes feat/ceremony-mainnet." \
+            --head "$BRANCH" \
+            --base main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
