@@ -72,7 +72,10 @@ async fn main() -> Result<()> {
     let config = ClientConfig {
         key_path: cli.key.clone(),
         entry_node: cli.node.clone(),
-        listen_addr: cli.listen.clone().unwrap_or_else(|| "[::1]:9002".to_string()),
+        listen_addr: cli
+            .listen
+            .clone()
+            .unwrap_or_else(|| "[::1]:9002".to_string()),
         yggdrasil_only: !cli.testnet,
         ..ClientConfig::default()
     };
