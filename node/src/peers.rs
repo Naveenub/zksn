@@ -285,7 +285,13 @@ impl PeerDiscovery {
         bootstrap_peers: Vec<String>,
         peer_store_path: Option<String>,
     ) -> Self {
-        Self::new_with_enforcement(own_addr, own_pubkey, bootstrap_peers, peer_store_path, false)
+        Self::new_with_enforcement(
+            own_addr,
+            own_pubkey,
+            bootstrap_peers,
+            peer_store_path,
+            false,
+        )
     }
 
     pub fn new_with_enforcement(
@@ -667,7 +673,10 @@ mod tests {
             true, // enforce
         ));
         // 192.168.1.1 is IPv4 — not in Yggdrasil space
-        let err = disc.connect_and_exchange("192.168.1.1:9001").await.unwrap_err();
+        let err = disc
+            .connect_and_exchange("192.168.1.1:9001")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("200::/7"));
     }
 
@@ -683,7 +692,10 @@ mod tests {
         // Connection will fail (nothing listening) but should not be rejected
         // by the Yggdrasil check — it should return a network error instead.
         let err = disc.connect_and_exchange("127.0.0.1:1").await.unwrap_err();
-        assert!(!err.to_string().contains("200::/7"), "should not be a Yggdrasil error: {err}");
+        assert!(
+            !err.to_string().contains("200::/7"),
+            "should not be a Yggdrasil error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -695,7 +707,10 @@ mod tests {
             None,
             true,
         ));
-        let err = disc.find_node("10.0.0.1:9001", [0u8; 32]).await.unwrap_err();
+        let err = disc
+            .find_node("10.0.0.1:9001", [0u8; 32])
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("200::/7"));
     }
 }

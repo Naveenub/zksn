@@ -170,8 +170,10 @@ mod tests {
         match ZksnClient::new(config).await {
             Ok(_) => {}
             Err(e) => {
-                assert!(!e.to_string().contains("200::/7"),
-                    "should not be rejected by Yggdrasil check: {e}");
+                assert!(
+                    !e.to_string().contains("200::/7"),
+                    "should not be rejected by Yggdrasil check: {e}"
+                );
             }
         }
     }
@@ -202,8 +204,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_different_identities_have_different_routing_keys() {
-        let cfg1 = ClientConfig { yggdrasil_only: false, ..ClientConfig::default() };
-        let cfg2 = ClientConfig { yggdrasil_only: false, ..ClientConfig::default() };
+        let cfg1 = ClientConfig {
+            yggdrasil_only: false,
+            ..ClientConfig::default()
+        };
+        let cfg2 = ClientConfig {
+            yggdrasil_only: false,
+            ..ClientConfig::default()
+        };
         let c1 = ZksnClient::new(cfg1).await.unwrap();
         let c2 = ZksnClient::new(cfg2).await.unwrap();
         assert_ne!(c1.routing_pubkey(), c2.routing_pubkey());

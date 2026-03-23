@@ -1,9 +1,9 @@
 use crate::{
     config::NodeConfig,
-    network,
     cover::CoverTrafficGenerator,
     metrics::NodeMetrics,
     mixer::PoissonMixer,
+    network,
     payment::PaymentGuard,
     peers::{PeerDiscovery, PeerTable},
     router::PacketRouter,

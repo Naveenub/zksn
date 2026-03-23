@@ -255,6 +255,9 @@ mod tests {
         // No yggdrasil_only field → serde default kicks in
         writeln!(tmp, "[network]\nlisten_addr=\"[200::1]:9001\"\nmax_peers=32\nconnect_timeout_ms=3000\nbootstrap_peers=[]\n[mixing]\npoisson_lambda_ms=200\ncover_traffic_rate=5\nmax_queue_depth=10000\nloop_cover_fraction=0.3\n[economic]\ncashu_mint_url=\"http://localhost:3338\"\nmin_token_value=1\nmonero_rpc_url=\"http://127.0.0.1:18082\"\nredemption_batch_size=100\n[keys]\nkey_store_path=\"/tmp/k\"\npersist_identity=false").unwrap();
         let c = NodeConfig::load(tmp.path().to_str().unwrap()).unwrap();
-        assert!(c.network.yggdrasil_only, "yggdrasil_only must default to true");
+        assert!(
+            c.network.yggdrasil_only,
+            "yggdrasil_only must default to true"
+        );
     }
 }
