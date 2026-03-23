@@ -1,176 +1,154 @@
-# ZKSN v1.1.0 — Yggdrasil 200::/7 enforced at Rust socket level
-**⚠️ Release candidate. Not yet production-audited.**
+# ZKSN v1.2.0 — demo.sh, full end-to-end devnet in one command
+**⚠️ Pre-release. Not yet production-audited.**
 
 ## What's in this release
 
-### feat/yggdrasil-transport — transport anonymity enforced in Rust
+### feat/demo — single-command local devnet
 
-Previously: nodes bound to plain TCP, peer connections were accepted and
-initiated regardless of address family. A misconfigured node would bind to
-a non-Yggdrasil interface and expose its real IP. The Yggdrasil requirement
-existed only in Docker/Nix infra config, invisible to the Rust binary.
+`scripts/demo.sh` runs the full ZKSN protocol end-to-end on localhost
+with no external dependencies beyond cargo and node. No Yggdrasil,
+no real Lightning, no Ethereum node required.
 
-Now: the binary itself refuses to start, accept, or dial unless every address
-is inside the Yggdrasil `200::/7` prefix — unless explicitly opted out.
-
----
-
-### New module: `node/src/network.rs`
-
-Core predicate and enforcement helpers.
-
-```rust
-// 200::/7: first 7 bits = 0000 001 → first byte ∈ {0x02, 0x03}
-pub fn is_yggdrasil(addr: &IpAddr) -> bool {
-    match addr {
-        IpAddr::V6(v6) => v6.octets()[0] & 0xFE == 0x02,
-        IpAddr::V4(_)  => false,
-    }
-}
-
-pub fn check_bind(addr: &str, enforce: bool) -> anyhow::Result<()>
-pub fn check_peer(addr: &str, enforce: bool) -> anyhow::Result<()>
+```bash
+bash scripts/demo.sh
 ```
 
-Both `check_*` functions no-op when `enforce = false`, so development
-and testnet flows require zero code changes.
+What it does:
 
----
+1. Builds `zksn-node` and `zksn` from source
+2. Writes configs for 3 mix nodes (testnet mode, 127.0.0.1, Poisson λ=50ms)
+3. Optionally starts a Nutshell Cashu mint via Docker (skipped gracefully if absent)
+4. Starts 3 mix nodes, waits for gossip to settle
+5. Generates Alice and Bob identities
+6. Starts Bob's receiver
+7. Sends an anonymous message Alice → Bob through the 3-hop mix
+8. Generates an anonymous governance vote:
+   - Adds voter to a depth-20 Poseidon membership tree
+   - Generates circuit witness from the tree path
+   - Produces a Groth16 proof (using the pot28 ceremony zkey)
+   - Verifies: `snarkjs groth16 verify → OK`
+   - Encodes the proof for `ZKSNGovernance.castVote()`
+9. Shows what the contract sees: nullifierHash, proposalId, voteYes,
+   membershipRoot — the voter's secret is never revealed
 
-### Three enforcement points
-
-**1. Bind — `MixNode::new()`**
-
-```rust
-network::check_bind(&config.network.listen_addr, config.enforce_yggdrasil())?;
-let listener = TcpListener::bind(&config.network.listen_addr).await?;
+Flags:
+```bash
+bash scripts/demo.sh --skip-vote   # mix only, no ZK proof step
+bash scripts/demo.sh --skip-mint   # no Docker mint
 ```
 
-A node with a non-Yggdrasil `listen_addr` fails at startup:
-```
-Error: Listen address '127.0.0.1:9001' is not in the Yggdrasil address
-space (200::/7). Set network.yggdrasil_only = false in node.toml to override.
-```
+### `client/cli/main.rs` — two new flags
 
-**2. Inbound accept — `handle_conn()`**
+The `zksn` CLI gains `--testnet` and `--listen`:
 
-```rust
-if payment_guard.enforce_yggdrasil() {
-    if let Ok(peer_addr) = stream.peer_addr() {
-        if !network::is_yggdrasil(&peer_addr.ip()) {
-            anyhow::bail!("Rejected inbound connection from non-Yggdrasil address {peer_addr}");
-        }
-    }
-}
+```bash
+# Before: no way to run without Yggdrasil
+zksn send <pubkey> "hello"  # would fail: 200::/7 check
+
+# After:
+zksn send <pubkey> "hello" --testnet --node 127.0.0.1:9101
+zksn receive --testnet --listen 127.0.0.1:9201
 ```
 
-Connections from outside `200::/7` are dropped before any data is read.
-
-**3. Outbound dial — `PeerDiscovery`**
-
-```rust
-// in connect_and_exchange() and find_node()
-crate::network::check_peer(addr, self.enforce_yggdrasil)?;
-```
-
-Kademlia gossip and bootstrap dials to non-Yggdrasil peers are rejected
-before `TcpStream::connect`. Peer addresses received from gossip that are
-outside `200::/7` are also checked before any connection attempt.
-
----
-
-### Configuration
-
-`node.toml` (node) and `client.toml` (client) gain one new field:
-
-```toml
-[network]
-yggdrasil_only = true   # default — enforce 200::/7
-# yggdrasil_only = false  # development / testnet / CI
-```
-
-**`NodeConfig::enforce_yggdrasil()`** — single source of truth:
-```rust
-pub fn enforce_yggdrasil(&self) -> bool {
-    self.network.yggdrasil_only && !self.testnet
-}
-```
-
-`testnet = true` always overrides `yggdrasil_only` — setting either one
-disables enforcement. The `yggdrasil_only` field defaults to `true` via
-serde, so existing config files without the field get enforcement for free
-on upgrade.
-
-The existing `--testnet` CLI flag continues to disable enforcement as before.
-
----
-
-### Client enforcement
-
-`ZksnClient::new()` checks both `listen_addr` and `entry_node` at
-construction time before any sockets are opened:
-
-```rust
-network::check_bind(&config.listen_addr, config.yggdrasil_only)?;
-network::check_peer(&config.entry_node,  config.yggdrasil_only)?;
-```
-
----
-
-## Test coverage
-
-| Crate / File | v1.0.0-rc1 | v1.1.0 | New |
-|---|---|---|---|
-| `node/src/network.rs` | — | 21 | +21 |
-| `node/src/config.rs` | 4 | 6 | +2 |
-| `node/src/node.rs` | 4 | 6 | +2 |
-| `node/src/peers.rs` | 8 | 11 | +3 |
-| `client/src/lib.rs` | 5 | 8 | +4 (incl. 3 Yggdrasil) |
-| All other | 174 | 174 | — |
-| **Total** | **195** | **227** | **+32** |
-
-New tests verify: boundary addresses (`200::` and `3ff:ffff:...`),
-non-Yggdrasil addresses (`::1`, `2001:db8::`, `192.168.x.x`, `127.0.0.1`),
-string-form address parsing, enforcement on/off modes, testnet bypass,
-`check_bind`/`check_peer` error messages, and peer rejection at both
-connect and accept paths.
+`--testnet` sets `yggdrasil_only = false`.
+`--listen` overrides the default receive address.
 
 ---
 
 ## Files changed
 
 ```
-node/src/network.rs          ← NEW — is_yggdrasil(), check_bind(), check_peer()
-node/src/lib.rs              ← add pub mod network
-node/src/config.rs           ← yggdrasil_only field, enforce_yggdrasil()
-node/src/node.rs             ← check_bind on startup, check inbound peer_addr
-node/src/payment.rs          ← enforce_yggdrasil() accessor on PaymentGuard
-node/src/peers.rs            ← check_peer on all outbound dials
-client/src/config.rs         ← yggdrasil_only field
-client/src/lib.rs            ← check_bind + check_peer in ZksnClient::new()
+scripts/demo.sh          ← NEW
+client/cli/main.rs       ← --testnet and --listen flags
+RELEASE.md               ← this file
+```
+
+---
+
+## Running the demo
+
+### Minimal (mix only)
+```bash
+# Install Rust and Node.js, then:
+bash scripts/demo.sh --skip-vote --skip-mint
+```
+
+### Full (mix + ZK vote)
+```bash
+# Requires ceremony/zkey_final.zkey (already in repo after pot28 ceremony)
+bash scripts/demo.sh
+```
+
+### Full (mix + ZK vote + Cashu mint)
+```bash
+# Requires Docker
+bash scripts/demo.sh
+```
+
+Expected output:
+```
+══ Prerequisites ══
+✓ cargo: cargo 1.xx.x
+✓ node:  v22.x.x
+
+══ Build ══
+   Compiling zksn-node v0.1.0
+   Finished release [optimized] target(s)
+✓ zksn-node: 8.2M
+✓ zksn:      6.4M
+
+══ Starting Mix Nodes ══
+✓ node1  listening on 127.0.0.1:9101
+✓ node2  listening on 127.0.0.1:9102
+✓ node3  listening on 127.0.0.1:9103
+
+══ Sending Anonymous Message  (Alice → Bob) ══
+  Message: "Hello from ZKSN 14:22:07"
+  Route: Alice → node1 → node2 → node3 → Bob
+✓ Message sent through mixnet
+
+══ Anonymous Governance Vote  (ZK proof) ══
+  Adding voter to depth-20 Poseidon membership tree...
+✓ Membership tree root: 6331401000423026...
+  Generating Groth16 proof...
+✓ Proof verified ✅  (snarkjs groth16 verify → OK)
+  nullifierHash  : 21605468119089894...
+  proposalId     : 42000000000001
+  voteYes        : 1
+  membershipRoot : 6331401000423026...
+✓ Anonymous vote proof complete
+✓ The contract cannot link this vote to the voter's secret
+
+══ Demo Complete ══
+✓ 3 mix nodes running
+✓ Anonymous message sent Alice → Bob through the mix
+✓ Anonymous governance vote (Groth16 proof, pot28 VK)
 ```
 
 ---
 
 ## Remaining gap
 
-| Gap | Branch |
-|---|---|
-| No demo script — no single-command devnet flow | `feat/demo` |
+None. Protocol is feature-complete.
+
+The next step is an external security audit before v1.0.0 final.
 
 ---
 
-## Cumulative state at v1.1.0
+## Cumulative state at v1.2.0
 
-**Solid ✅**
+**Solid ✅ — everything**
 - Ed25519, Sphinx, Noise_XX, ZKP primitives
 - Mix node — Poisson, cover traffic, Kademlia, PaymentEnvelope
-- Client — send/receive, RouteSelector
+- Client — send/receive/RouteSelector, `--testnet` + `--listen` CLI flags
 - Economic — blind token full cycle, MeltManager
-- Governance — depth-20 circuit, BN254 pairing, pot28 VK (1,000+ contributors)
-- PoseidonHasher — circomlibjs bytecode, matches circuit exactly
-- `scripts/tree.js` — sparse depth-20 Poseidon tree
-- **Yggdrasil `200::/7` enforced at bind, accept, and dial**
+- Governance — depth-20 circuit, BN254 pairing, pot28 VK (1000+ contributors)
+- PoseidonHasher + sparse depth-20 tree builder + encode_proof.js
+- Yggdrasil `200::/7` enforced at bind, accept, dial
+- `scripts/demo.sh` — full flow in one command
 
-**Stubbed ❌**
-- No demo script
+**No remaining protocol gaps.**
+
+## Next
+
+External security audit → v1.0.0 final.

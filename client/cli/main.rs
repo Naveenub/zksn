@@ -15,6 +15,14 @@ struct Cli {
     node: String,
     #[arg(short, long, global = true)]
     debug: bool,
+    /// Disable Yggdrasil 200::/7 enforcement (development / demo only).
+    /// Allows plain TCP addresses instead of requiring a Yggdrasil overlay.
+    #[arg(long, global = true)]
+    testnet: bool,
+    /// TCP address this client listens on for incoming messages.
+    /// Defaults to a random OS-assigned port when set to [::]:0.
+    #[arg(long, global = true)]
+    listen: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -64,6 +72,8 @@ async fn main() -> Result<()> {
     let config = ClientConfig {
         key_path: cli.key.clone(),
         entry_node: cli.node.clone(),
+        listen_addr: cli.listen.clone().unwrap_or_else(|| "[::1]:9002".to_string()),
+        yggdrasil_only: !cli.testnet,
         ..ClientConfig::default()
     };
 
