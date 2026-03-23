@@ -4,9 +4,11 @@
 > No central servers. No corporate entity. No IP leakage. No registration.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Status: Pre-Alpha](https://img.shields.io/badge/Status-Pre--Alpha-red.svg)]()
+[![Status: Pre-Release](https://img.shields.io/badge/Status-Pre--Release-orange.svg)](https://github.com/Naveenob/zksn/releases/latest)
+[![CI](https://github.com/Naveenob/zksn/actions/workflows/ci.yml/badge.svg)](https://github.com/Naveenob/zksn/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-blue.svg)](https://soliditylang.org/)
+[![Tests](https://img.shields.io/badge/Tests-227%20passing-brightgreen.svg)](https://github.com/Naveenob/zksn/actions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 ---
@@ -56,11 +58,11 @@ The network achieves this through five orthogonal, independently verifiable mech
 |---|---|---|
 | Identity Nullification | Ed25519 keypair only | No email, username, phone, or IP ever stored |
 | Metadata Erasure | Sphinx + Poisson mixing + cover traffic | Sender, receiver, timing, and content all hidden |
-| Transport Sovereignty | Yggdrasil encrypted IPv6 mesh | No IANA, no ASN, no routing authority |
+| Transport Sovereignty | Yggdrasil encrypted IPv6 mesh (`200::/7`, enforced at Rust socket level) | No IANA, no ASN, no routing authority |
 | Anonymous Services | I2P (i2pd) garlic routing | Server IP never exposed to clients |
 | Economic Sovereignty | Cashu (Chaumian ecash) + Monero (XMR) | Unlinkable micropayments, private settlement |
 | Node Amnesia | NixOS tmpfs root, no persistent writes | Hardware seizure yields zero data |
-| Trustless Governance | ZK-SNARK on-chain voting | Anonymous, non-coercible, fully autonomous execution |
+| Trustless Governance | ZK-SNARK on-chain voting (Groth16, BN254, pot28 VK) | Anonymous, non-coercible, fully autonomous execution |
 | Code as Speech | MIT license, no foundation | Cannot be seized; protected under *Bernstein v. DOJ* |
 
 ---
@@ -101,47 +103,8 @@ The network achieves this through five orthogonal, independently verifiable mech
 ┌──────────────────────────▼──────────────────────────┐
 │              Layer 0 — Mesh Transport Plane         │
 │  Yggdrasil IPv6 mesh · Address = SHA-512(pubkey)    │
-│  CJDNS fallback · LoRa/Meshtastic air-gap capable   │
+│  200::/7 enforced in Rust · CJDNS fallback          │
 └─────────────────────────────────────────────────────┘
-```
-
-### Packet Flow (Sending a Message)
-
-```
-[Client]
-   │ 1. Encrypt payload with recipient X25519 public key
-   │ 2. Build Sphinx packet:
-   │       select random path: [mix₁, mix₂, mix₃, destination]
-   │       layer-encrypt: Enc(Enc(Enc(payload, mix₃), mix₂), mix₁)
-   │ 3. Attach blind-signed Cashu token
-   │ 4. Transmit to entry mix node over Yggdrasil
-   ▼
-[Mix Node 1]  ← decrypts outer layer → sees only "forward to mix₂"
-               ← holds for Exp(1/λ) ms → emits cover traffic continuously
-   ▼
-[Mix Node 2]  ← decrypts → sees only "forward to mix₃"
-   ▼
-[Mix Node 3]  ← decrypts → sees only "forward to destination"
-   ▼
-[I2P Service] ← receives encrypted payload, decrypts with private key
-                 sender unknown · path unknown · timing obfuscated
-```
-
-### Packet Structure
-
-```
-┌────────────────────────────────────────────────────┐
-│ Sphinx Header (fixed size)                         │
-│  ├── Ephemeral public key (32 bytes, X25519)       │
-│  ├── Routing header (layered encrypted, 160 bytes) │
-│  └── MAC chain                                     │
-├────────────────────────────────────────────────────┤
-│ Cashu Payment Token (blind-signed ecash)           │
-├────────────────────────────────────────────────────┤
-│ Payload (padded to fixed size)                     │
-│  └── Application data (ChaCha20-Poly1305)          │
-└────────────────────────────────────────────────────┘
-Total: FIXED 2048 bytes — eliminates length-based correlation
 ```
 
 ---
@@ -151,96 +114,68 @@ Total: FIXED 2048 bytes — eliminates length-based correlation
 ```
 zksn/
 ├── .github/
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.md
-│   │   └── feature_request.md
 │   ├── workflows/
-│   │   └── ci.yml                  # Rust (clippy · test · audit) + Foundry (forge test)
-│   └── PULL_REQUEST_TEMPLATE.md    # Crypto review checklist
-├── client/                         # Client library + CLI (zksn)
-│   ├── cli/
-│   │   └── main.rs                 # identity · send · receive · wallet subcommands
-│   ├── src/
-│   │   ├── config.rs               # ClientConfig · entry node · hop count · mint URL
-│   │   ├── lib.rs                  # ZksnClient API · send() · receive()
-│   │   ├── receive.rs              # TCP listener · decrypt · deliver
-│   │   ├── route.rs                # RouteSelector — samples live mix nodes from PeerTable, appends recipient as final hop
-│   │   └── send.rs                 # Encrypt → Sphinx → attach token → transmit
-│   ├── Cargo.toml
-│   └── README.md
-├── crypto/                         # Cryptographic primitives (no external I/O)
-│   ├── src/
-│   │   ├── identity.rs             # Ed25519 keypair · sign/verify · fingerprinting
-│   │   ├── lib.rs
-│   │   ├── noise.rs                # Noise_XX handshake · mutual auth · forward secrecy
-│   │   ├── sphinx.rs               # Sphinx packet build/unwrap · fixed 2048B · cover packets
-│   │   └── zkp.rs                  # Merkle membership tree · nullifiers · DAO credentials
-│   └── Cargo.toml
-├── docs/
-│   ├── ARCHITECTURE.md             # Full 5-layer technical blueprint
-│   ├── LEGAL.md                    # Mere conduit · Bernstein · Tornado Cash analysis
-│   ├── ROADMAP.md                  # 8-phase development plan
-│   └── THREAT_MODEL.md             # 6 adversary classes with mitigations
-├── economic/                       # Payment layer
-│   ├── src/
-│   │   ├── cashu.rs                # Cashu NUT-00 tokens · blind signatures · batch redemption
-│   │   ├── lib.rs
-│   │   ├── monero.rs               # Monero RPC · stealth addresses · piconero conversion
-│   │   └── token.rs                # PacketToken — Cashu token attached to Sphinx packets
-│   ├── Cargo.toml
-│   └── README.md
-├── governance/                     # DAO smart contracts (Foundry)
+│   │   ├── ci.yml                     # Rust · Security Audit · Governance · Ceremony
+│   │   └── ceremony_mainnet.yml       # Automated pot28 trusted setup
+│   └── PULL_REQUEST_TEMPLATE.md
+├── ceremony/
+│   ├── ATTESTATION.md                 # pot28 contribution hashes + SHA256 fingerprints
+│   ├── verification_key.json          # Groth16 VK (Hermez pot28, 1000+ contributors)
+│   ├── proof.json / public.json       # Ceremony test proof
+│   └── input.json                     # Ceremony test vector
+├── circuits/
+│   └── MembershipVote.circom          # Groth16 circuit: depth-20 Merkle + nullifier (depth=20)
+├── client/
+│   ├── cli/main.rs                    # zksn CLI: identity · send · receive · --testnet · --listen
+│   └── src/
+│       ├── config.rs                  # ClientConfig + yggdrasil_only
+│       ├── lib.rs                     # ZksnClient API + Yggdrasil enforcement
+│       ├── receive.rs                 # TCP listener · decrypt · deliver
+│       ├── route.rs                   # RouteSelector — DHT-based hop selection
+│       └── send.rs                    # Sphinx build · PaymentEnvelope inject
+├── crypto/
+│   └── src/
+│       ├── identity.rs                # Ed25519 keypair
+│       ├── noise.rs                   # Noise_XX mutual auth
+│       ├── sphinx.rs                  # Sphinx 2048B onion packets · per-hop key blinding
+│       └── zkp.rs                     # Merkle membership · nullifiers
+├── economic/
+│   └── src/
+│       ├── cashu.rs                   # NUT-00 blind-DH · hash_to_curve · B_=Y+r·G · C=C_-r·K
+│       └── mint.rs                    # MintClient NUT-01/03/05/07 · NodeWallet · MeltManager
+├── governance/
 │   ├── contracts/
-│   │   ├── IVerifier.sol           # Interface for ZK-SNARK verifier
-│   │   ├── MockVerifier.sol        # Always-true + StrictMock verifiers for tests
-│   │   └── ZKSNGovernance.sol      # Core DAO · ZK voting · time-lock · autonomous execution
-│   ├── scripts/
-│   │   └── Deploy.s.sol            # Foundry deployment script
-│   ├── test/
-│   │   └── ZKSNGovernance.t.sol    # 20 tests: voting · double-vote · quorum · time-lock
-│   ├── foundry.toml
-│   └── README.md
+│   │   ├── Groth16Verifier.sol        # BN254 pairing · pot28 VK (depth-20, 1000+ contributors)
+│   │   ├── PoseidonHasher.sol         # circomlibjs bytecode · hashLeaf/hashNullifier/hashNode
+│   │   └── ZKSNGovernance.sol         # DAO · ZK voting · 7-day period · 2-day timelock
+│   └── test/
+│       └── ZKSNGovernance.t.sol       # 47 tests: governance lifecycle + exact Poseidon vectors
 ├── infra/
 │   ├── docker/
-│   │   ├── config/
-│   │   │   ├── cashu.env           # Cashu mint env (FakeWallet for dev)
-│   │   │   ├── i2pd.conf           # i2pd settings (HTTP 4444 · SOCKS 4447 · console 7070)
-│   │   │   ├── tunnels.conf        # i2pd tunnel definitions
-│   │   │   ├── yggdrasil-peer.conf # Peer node · connects to seed
-│   │   │   └── yggdrasil-seed.conf # Seed node · multicast discovery
-│   │   ├── Dockerfile.client       # Multi-stage Rust build → Debian slim
-│   │   ├── Dockerfile.mixnode      # Multi-stage Rust build → Debian slim
-│   │   └── docker-compose.yml      # 7-service devnet: 3 mix nodes + 2 Yggdrasil + i2pd + Cashu mint
-│   └── nixos/
-│       ├── node.nix                # RAM-only NixOS · tmpfs root · Yggdrasil · dm-verity · LUKS2
-│       └── README.md
-├── node/                           # Mix node binary (zksn-node)
-│   ├── src/
-│   │   ├── config.rs               # TOML config · IdentityHolder · defaults
-│   │   ├── cover.rs                # DROP + LOOP cover traffic generator
-│   │   ├── lib.rs                  # Module exports
-│   │   ├── main.rs                 # CLI entry point (clap) · config load · tracing init
-│   │   ├── metrics.rs              # Prometheus counters/gauges/histograms (local only)
-│   │   ├── mixer.rs                # Poisson delay pool · Exp(λ) sampling · reordering
-│   │   ├── node.rs                 # Subsystem orchestrator · TCP listener · channel wiring
-│   │   ├── peers.rs
-│   │   └── router.rs               # TCP packet forwarding · fixed-size framing 
-│   ├── Cargo.toml
-│   ├── node.toml.example           # Fully annotated config template
-│   └── README.md
+│   │   ├── docker-compose.yml         # 7-service devnet: 3 nodes + Yggdrasil + i2pd + Cashu
+│   │   └── config/                    # Yggdrasil · i2pd · Cashu env configs
+│   └── nixos/node.nix                 # RAM-only NixOS · tmpfs · dm-verity · Yggdrasil
+├── node/
+│   └── src/
+│       ├── config.rs                  # NodeConfig + yggdrasil_only + enforce_yggdrasil()
+│       ├── mixer.rs                   # Poisson delay pool · Exp(λ) sampling
+│       ├── network.rs                 # is_yggdrasil() · check_bind() · check_peer() — 200::/7
+│       ├── node.rs                    # TCP listener · Yggdrasil bind/accept enforcement
+│       ├── payment.rs                 # PaymentGuard NUT-07 · MeltManager threshold withdrawal
+│       └── peers.rs                   # Kademlia DHT · k-buckets · gossip · peer persistence
 ├── scripts/
-│   ├── bootstrap-seed.sh           # Seed node setup: Yggdrasil + i2pd + identity + Cashu mint
-│   └── gen-identity.sh             # Ed25519 keypair generator · fingerprint · secure permissions
-├── .gitignore
+│   ├── ceremony.sh                    # Full pot28 ceremony runbook
+│   ├── demo.sh                        # End-to-end local devnet (one command)
+│   ├── download_ptau.sh               # Hermez pot28 download + SHA256 verify
+│   ├── encode_proof.js                # EIP-197 proof encoding for Solidity
+│   ├── patch_ceremony.js              # Auto-patch Groth16Verifier.sol + test constants
+│   ├── tree.js                        # Sparse depth-20 Poseidon tree builder
+│   └── tree_ci.js                     # Stateless tree_ci for ceremony workflow
+├── Cargo.toml                         # Workspace: node · client · crypto · economic
 ├── CHANGELOG.md
-├── CONTRIBUTING.md                 # Anonymous contribution guide · GPG · Tor/I2P push
-├── Cargo.lock
-├── Cargo.toml                      # Workspace (node · client · crypto · economic)
-├── flake.nix                       # Nix dev shell: Rust 1.78 · Foundry · Yggdrasil · i2pd · just
-├── Justfile                        # 30+ developer commands (build · test · devnet · contracts)
-├── LICENSE                         # MIT
-├── README.md
-└── SECURITY.md                     # Responsible disclosure · severity matrix
+├── CONTRIBUTING.md
+├── RELEASE.md                         # Latest release notes
+└── SECURITY.md
 ```
 
 ---
@@ -251,86 +186,85 @@ zksn/
 |---|---|---|---|
 | Node implementation | Rust | 1.75+ | Mix node, client, crypto primitives |
 | Async runtime | Tokio | 1.x | All async I/O |
-| Mesh transport | [Yggdrasil](https://yggdrasil-network.github.io/) | latest | Encrypted IPv6 mesh, address = key |
-| Mesh transport (alt) | [CJDNS](https://github.com/cjdelisle/cjdns) | latest | Redundant overlay, different routing |
+| Mesh transport | [Yggdrasil](https://yggdrasil-network.github.io/) | latest | Encrypted IPv6 mesh, `200::/7` enforced in Rust |
 | Anonymous services | [I2P (i2pd)](https://i2pd.website/) | latest | .b32.i2p service hosting |
-| Packet format | Sphinx | custom | Fixed-size onion packets |
+| Packet format | Sphinx | custom | Fixed 2048B onion packets, per-hop key blinding |
 | Node handshake | [Noise Protocol](https://noiseprotocol.org/) `XX` | snow 0.9 | Mutual auth, forward secrecy |
 | Signing | Ed25519 | ed25519-dalek 2 | Node identity |
 | Key exchange | X25519 | x25519-dalek 2 | Session ECDH |
 | Encryption | ChaCha20-Poly1305 | chacha20poly1305 0.10 | Packet payload |
-| Hashing | SHA-256 / SHA-512 | sha2 0.10 | Fingerprints, Merkle trees |
-| Micropayments | [Cashu](https://cashu.space/) | NUT-00 | Blind-signed per-packet ecash |
+| Micropayments | [Cashu](https://cashu.space/) | NUT-00/01/03/05/07 | Blind-signed per-packet ecash |
 | Settlement | [Monero (XMR)](https://getmonero.org/) | RPC v2 | Private on-chain settlement |
-| Governance | Solidity 0.8.20 | Foundry | ZK-SNARK anonymous voting DAO |
-| ZK proofs | Verifier interface | pluggable | Circom / Noir / Halo2 compatible |
+| Governance | Solidity 0.8.20 + Foundry | — | ZK-SNARK anonymous voting DAO |
+| ZK circuit | Circom 2.1.4 + circomlib | depth-20 | Poseidon Merkle membership + nullifier |
+| ZK ceremony | Groth16 / BN254 | pot28 (1000+) | Hermez trusted setup, 2^15 capacity |
+| ZK library | snarkjs 0.7.6 | — | Proving, verification, VK export |
+| On-chain hash | PoseidonHasher | circomlibjs bytecode | Matches circuit exactly |
 | Node OS | [NixOS](https://nixos.org/) | 24.x | RAM-only, reproducible builds |
-| Dev environment | Nix flakes + just | — | Reproducible shell, 30+ shortcuts |
-| Metrics | Prometheus | 0.13 | Local-only, never transmitted |
-| CI | GitHub Actions | — | Rust + Foundry pipeline |
+| CI | GitHub Actions | — | Rust · Audit · Foundry · Ceremony |
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
-```bash
-# Rust (stable 1.75+)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Foundry (for governance contracts)
-curl -L https://foundry.paradigm.xyz | bash && foundryup
-
-# (Optional) Nix — gives you everything in one command
-nix develop   # inside the repo root
-```
-
-### Clone and Build
+### Run the full demo (one command)
 
 ```bash
 git clone https://github.com/Naveenob/zksn.git
 cd zksn
 
-# Build all crates
-cargo build --release
+# Install Node.js deps (for ZK proof step)
+npm install
 
-# Or use just (recommended)
-just build-release
+# Run the full end-to-end demo:
+#   3 mix nodes + anonymous message + governance vote with ZK proof
+bash scripts/demo.sh
 ```
 
-### Generate Your Identity
+Expected output:
+```
+══ Prerequisites ══
+✓ cargo: cargo 1.xx.x
+✓ node:  v22.x.x
 
-```bash
-# Using the shell script
-chmod +x scripts/gen-identity.sh
-./scripts/gen-identity.sh
-# → identity.pub  (share this)
-# → identity.key  (NEVER share — stores 32-byte Ed25519 secret)
+══ Build ══
+   Finished release [optimized] target(s)
+✓ zksn-node: 8.2M
 
-# Or via CLI
-./target/release/zksn identity generate --output ~/.zksn/identity.key
+══ Starting Mix Nodes ══
+✓ node1  listening on 127.0.0.1:9101
+✓ node2  listening on 127.0.0.1:9102
+✓ node3  listening on 127.0.0.1:9103
+
+══ Sending Anonymous Message  (Alice → Bob) ══
+✓ Message sent through mixnet
+
+══ Anonymous Governance Vote  (ZK proof) ══
+✓ Membership tree root: 6331401000423026...
+✓ Proof verified ✅  (snarkjs groth16 verify → OK)
+✓ Anonymous vote proof complete
+✓ The contract cannot link this vote to the voter's secret
+
+══ Demo Complete ══
 ```
 
-### Spin Up a Dev Network (Docker)
-
+Flags:
 ```bash
-cd infra/docker
-docker compose up
-# Starts: 3 mix nodes + 2 Yggdrasil nodes + i2pd + Cashu mint
+bash scripts/demo.sh --skip-vote   # mix only, skip ZK proof
+bash scripts/demo.sh --skip-mint   # no Docker mint required
 ```
 
-### Run Tests
+### Build and test
 
 ```bash
-# All Rust unit + integration tests
+# All Rust tests
 cargo test --workspace
 
-# Governance contracts (Foundry)
-cd governance && forge test -vv
+# Governance contracts (47 Solidity tests)
+cd governance && forge install foundry-rs/forge-std --no-git && forge test -vv
 
-# Everything via just
-just test-all
+# Everything
+cargo test --workspace && cd governance && forge test -vv
 ```
 
 ---
@@ -344,572 +278,304 @@ cp node/node.toml.example node.toml
 $EDITOR node.toml
 ```
 
-Key parameters:
-
 ```toml
 [network]
-listen_addr = "[200:your:yggdrasil:addr::1]:9001"  # Yggdrasil IPv6 in production
-max_peers = 64
-bootstrap_peers = [
-  "[200:abcd:1234:5678::1]:9001",                  # Known seed nodes
-]
+# Production: Yggdrasil IPv6 address (200::/7 — enforced by the binary)
+listen_addr        = "[200:your:yggdrasil:addr::1]:9001"
+max_peers          = 64
+bootstrap_peers    = ["[200:seed1::1]:9001"]
+yggdrasil_only     = true   # default — set false for testnet/dev only
 
 [mixing]
-poisson_lambda_ms  = 200    # Mean delay: 200ms. Higher = more anonymity, more latency.
-cover_traffic_rate = 5      # Cover packets/sec. Set ≥ expected real traffic rate.
-max_queue_depth    = 10000  # DoS protection: drop after this many queued packets.
-loop_cover_fraction = 0.3   # 30% LOOP (verify liveness), 70% DROP (pure cover)
+poisson_lambda_ms   = 200   # mean delay ms; higher = more anonymity
+cover_traffic_rate  = 5     # cover packets/sec
+max_queue_depth     = 10000
+loop_cover_fraction = 0.3
 
 [economic]
 cashu_mint_url        = "http://mint.zksn.internal:3338"
+min_token_value       = 1
 monero_rpc_url        = "http://127.0.0.1:18082"
-redemption_batch_size = 100   # Batch to reduce linkability
+redemption_batch_size = 100
 
 [keys]
-persist_identity = false  # false = ephemeral key per boot (fully stateless)
+key_store_path   = "/var/lib/zksn/keys/identity.key"
+persist_identity = false   # false = ephemeral key per boot (fully stateless)
 ```
 
 ### 2. Run
 
 ```bash
-# Development
-cargo run --package zksn-node -- --config node.toml
-
-# Production binary
+# Production
 ./target/release/zksn-node --config node.toml
 
-# Testnet (no payment enforcement)
+# Development (disables Yggdrasil enforcement, allows 127.0.0.1)
 ./target/release/zksn-node --config node.toml --testnet
 
 # Debug logging
 ./target/release/zksn-node --config node.toml --debug
 ```
 
-### 3. Node Startup Output
+### Yggdrasil address enforcement
 
-```
-╔══════════════════════════════════════╗
-║   ZKSN Mix Node — Starting Up        ║
-╚══════════════════════════════════════╝
-Node ID:     a3f8:c2d1:9e47:...
-Listen:      [200:abcd::1]:9001
-Poisson λ:   200ms
-Cover rate:  5 pkt/s
-Testnet:     false
-Mix node ready — accepting Sphinx packets
-```
+The node binary enforces `200::/7` at three levels:
 
-### 4. Internal Subsystem Architecture
+- **Bind** — refuses to start if `listen_addr` is not a Yggdrasil address
+- **Accept** — drops inbound connections from outside `200::/7` before reading any data
+- **Dial** — refuses to connect to peers outside `200::/7`
 
-```
-[TCP :9001] → handle_connection()
-                    │ tx_incoming  (mpsc channel)
-                    ▼
-            [PoissonMixer]          ← cover packets ← [CoverTrafficGenerator]
-              Exp(1/λ) delay pool
-              Pool reordering
-                    │ tx_outgoing  (mpsc channel)
-                    ▼
-            [PacketRouter]          → TCP → next hop (fixed PACKET_SIZE bytes)
-```
-
-All four subsystems run as independent Tokio tasks communicating over bounded channels.
+Override with `yggdrasil_only = false` in `node.toml` or `--testnet` flag.
 
 ---
 
 ## Client CLI
 
-The `zksn` binary provides a full command-line interface.
-
 ```bash
-# Build the CLI
 cargo build --release --package zksn-client
-
-# Or with just
-just build-client
 ```
-
-### Commands
 
 ```
 zksn [OPTIONS] <COMMAND>
 
 Options:
-  -k, --key   <FILE>    Path to identity key file
-  -n, --node  <ADDR>    Entry mix node address (default: [::1]:9001)
-  -d, --debug           Enable debug logging
+  -k, --key      <FILE>    Identity key file
+  -n, --node     <ADDR>    Entry mix node  (default: [::1]:9001)
+  -l, --listen   <ADDR>    Listen address for incoming messages
+      --testnet            Disable Yggdrasil enforcement (dev/demo only)
+  -d, --debug              Debug logging
 
 Commands:
   identity generate [--output <file>]    Create a new Ed25519 keypair
-  identity show                          Display current identity fingerprint
-
+  identity show                          Display identity fingerprint
   send <recipient-pubkey-hex> <message>  Send encrypted message through mixnet
-  receive                                Listen for incoming messages (blocks)
-
+  receive                                Listen for incoming messages
   wallet balance                         Show Cashu token balance
-  wallet topup <millisats>               Top up via XMR payment to mint
+  wallet topup <sats>                    Top up via mint
 ```
 
-### Usage Examples
-
 ```bash
-# Generate and save identity
+# Generate identity
 zksn identity generate --output ~/.zksn/identity.key
 
-# Show your fingerprint (share this so others can reach you)
-zksn --key ~/.zksn/identity.key identity show
-# → Identity: a3f8c2d19e47...
-
-# Send a message
+# Send (production — requires Yggdrasil)
 zksn --key ~/.zksn/identity.key \
      --node [200:abcd::1]:9001 \
-     send a3f8c2d19e47... "Hello, sovereign network."
+     send <recipient-pubkey-hex> "Hello"
 
-# Listen for messages
-zksn --key ~/.zksn/identity.key receive
-# Listening for messages as: a3f8c2d19e47...
-# Press Ctrl+C to stop.
+# Send (testnet / demo)
+zksn --key ~/.zksn/identity.key \
+     --node 127.0.0.1:9101 \
+     --testnet \
+     send <recipient-pubkey-hex> "Hello"
+
+# Receive
+zksn --key ~/.zksn/identity.key \
+     --listen 127.0.0.1:9201 \
+     --testnet \
+     receive
 ```
 
 ---
 
 ## Configuration Reference
 
-### Node (`node.toml`)
+### `yggdrasil_only` (node + client)
 
-| Section | Key | Default | Description |
-|---|---|---|---|
-| `[network]` | `listen_addr` | `[::1]:9001` | Sphinx packet listener. Use Yggdrasil IPv6 in production. |
-| | `max_peers` | `64` | Max concurrent peer TCP connections. |
-| | `connect_timeout_ms` | `5000` | Outbound connection timeout. |
-| | `bootstrap_peers` | `[]` | Known seed node addresses to connect to on start. |
-| `[mixing]` | `poisson_lambda_ms` | `200` | Mean mixing delay (ms). Actual delay ~ Exp(1/λ). |
-| | `cover_traffic_rate` | `5` | Cover packets/sec. `0` disables cover traffic (insecure). |
-| | `max_queue_depth` | `10000` | Max packets in mixing pool before drop (DoS protection). |
-| | `loop_cover_fraction` | `0.3` | Fraction of cover that is LOOP vs DROP. |
-| `[economic]` | `cashu_mint_url` | — | Cashu mint endpoint for token validation. |
-| | `min_token_value` | `1` | Minimum token value per packet. |
-| | `monero_rpc_url` | `http://127.0.0.1:18082` | Monero RPC for settlement. |
-| | `redemption_batch_size` | `100` | Batch this many tokens before redeeming (reduces linkability). |
-| `[keys]` | `key_store_path` | `/var/lib/zksn/keys/identity.key` | Path to encrypted key file. |
-| | `persist_identity` | `false` | `false` = generate fresh key every boot (RAM-only / stateless). |
+| Value | Behaviour |
+|---|---|
+| `true` (default) | Enforce `200::/7` at bind, accept, and dial |
+| `false` | Allow any address — development and testnet only |
 
-### Anonymity Tuning
-
-| Scenario | `poisson_lambda_ms` | `cover_traffic_rate` | Notes |
-|---|---|---|---|
-| Interactive messaging | 100–300 | 5–10 | Low latency, reasonable anonymity |
-| High-security async | 1000–5000 | 10–20 | High latency, strong anonymity |
-| High-throughput relay | 50–100 | 20–50 | Throughput-optimized, weaker timing resistance |
-| Research/testnet | 1–10 | 0–1 | Fast feedback, no anonymity guarantees |
+The `--testnet` CLI flag sets `yggdrasil_only = false` and also disables payment enforcement on the node.
 
 ---
 
 ## Cryptographic Design
 
-### Identity (`crypto/src/identity.rs`)
-
-- **Algorithm:** Ed25519 (via `ed25519-dalek` 2.x)
-- **Key generation:** `ZksnIdentity::generate()` — secure random via OS entropy
-- **Fingerprint:** `SHA-256(public_key)[0..8]` displayed as hex — human-identifiable short handle
-- **Secret export:** `to_secret_bytes()` — 32-byte raw secret; zero-on-drop via `zeroize`
-
 ### Sphinx Packets (`crypto/src/sphinx.rs`)
 
-- **Packet size:** Fixed `PACKET_SIZE = 2048` bytes — all packets are identical length
-- **Ephemeral key:** 32-byte X25519 public key in header
-- **Routing header:** Layered-encrypted 96 bytes — each hop decrypts one layer
-- **Payload:** ChaCha20-Poly1305 encrypted application data
-- **Cover types:** `PacketType::Drop` (random destination) · `PacketType::Loop` (routes back to sender)
-- **Per-hop key blinding:** Each node blinds the ephemeral public key before forwarding — `α_{i+1} = b_i ×_clamped α_i` where `b_i = SHA-256("sphinx-blinding" ‖ s_i ‖ α_i)`. Colluding nodes cannot correlate packets across hops.
+- **Fixed size:** 2048 bytes — all packets identical length, no length-based correlation
+- **Ephemeral key:** 32-byte X25519 public key per packet
+- **Per-hop key blinding:** `α_{i+1} = b_i ×_clamped α_i` — colluding nodes cannot correlate packets across hops
+- **Cover types:** `DROP` (random destination) and `LOOP` (routes back to self)
 
-### Noise Handshake (`crypto/src/noise.rs`)
+### Governance ZK (`governance/contracts/`)
 
-Pattern: `Noise_XX_25519_ChaChaPoly_SHA256`
+| Component | Detail |
+|---|---|
+| Circuit | `MembershipVote(depth=20)` — 5,360 constraints |
+| Max members | 2^20 = 1,048,576 |
+| Trusted setup | Hermez pot28 (1,000+ contributors) |
+| Curve | BN254 |
+| Hash | Poseidon (circomlibjs bytecode, exact match to circuit) |
+| Proof system | Groth16 (256-byte proofs, ~215k gas to verify) |
+| Nullifier | `Poseidon(secret, proposalId)` — unique per (member, proposal) |
 
-```
-→ e
-← e, ee, s, es
-→ s, se
-```
+### Trust model
 
-- **Mutual authentication** — both parties prove possession of static keys
-- **Forward secrecy** — ephemeral keys per session; past sessions secure after key compromise
-- **Identity hiding** — static keys transmitted encrypted; no plaintext identity on wire
-- **Implementation:** `snow` 0.9 library; `NoiseInitiator` / `NoiseResponder` structs with 2 passing integration tests
-
-### ZK Credentials (`crypto/src/zkp.rs`)
-
-- **Commitment:** `SHA-256(secret || nonce)` — binds membership without revealing identity
-- **Merkle tree:** Binary tree over member commitments; root stored on-chain in governance contract
-- **Nullifier:** `SHA-256(secret || proposal_id)` — unique per (member, proposal) pair; prevents double-voting without revealing member
-- **Production note:** Replace SHA-256 with Poseidon hash for ZK-SNARK circuit compatibility
+The governance circuit's security rests on:
+- **Phase 1:** Hermez pot28 — at least 1 of 1,000+ contributors must have discarded toxic waste
+- **Phase 2:** 3-contributor MPC (`ceremony/ATTESTATION.md`) — at least 1 of 3 must have discarded
 
 ---
 
 ## Economic Layer
 
-### Overview
+Full Cashu NUT-00/01/03/05/07 implementation:
 
 ```
-[User]
-  │ Sends XMR to mint's stealth address
-  ▼
-[Cashu Mint]
-  │ Issues blind-signed ecash tokens (NUT-00)
-  │ Cannot link issued token to redemption → no usage tracking
-  ▼
-[Client]
-  │ Attaches token to each Sphinx packet
-  ▼
-[Mix Node]
-  │ Validates token, forwards packet
-  │ Batches N tokens (default: 100) before redeeming
-  │ → batch redemption breaks per-packet linkability
-  ▼
-[Cashu Mint]
-  │ Redeems batch → pays out in XMR to node's stealth address
-  ▼
-[Monero Network]
-  RingCT + ring signatures + stealth addresses
-  → on-chain amounts and senders private
+secret → hash_to_curve → Y
+r (random) → r·G
+B_ = Y + r·G          → sent to mint (blinded)
+C_ = k·B_              ← returned by mint (blind signature)
+C  = C_ - r·K          → valid Cashu proof (unblinded)
 ```
 
-### Cashu (`economic/src/cashu.rs`)
-
-Implements Cashu NUT-00:
-
-- `CashuToken` — blind-signed proof bundle, mint URL, denomination proofs
-- `CashuWallet` — local balance tracking, batch redemption queue
-- Blind signature protocol: client blinds secret → mint signs blinded point → client unblinds → mint cannot link
-- **Privacy property:** Even the mint operator learns nothing about usage patterns
-
-### Monero (`economic/src/monero.rs`)
-
-- JSON-RPC client for `monero-wallet-rpc`
-- `get_balance()` · `new_subaddress()` · `transfer()`
-- Piconero (`u64`) ↔ XMR (`f64`) conversion utilities
-- Stealth addresses: each payment generates a fresh one-time address
-
-### Per-Packet Token (`economic/src/token.rs`)
-
-`PacketToken` serializes a Cashu proof into the Sphinx packet payload alongside the encrypted message. Mix nodes validate the token before forwarding, refusing payment-free packets.
+`MeltManager` runs as a background task — when the node wallet reaches `threshold_sats` it fires `POST /v1/melt` to pay a Lightning invoice.
 
 ---
 
 ## Governance
 
-ZKSN is governed by an anonymous on-chain DAO with no named administrators.
-
-### Contract: `ZKSNGovernance.sol`
-
 ```
 No multisig. No admin. No upgradeable proxy.
-Protocol changes execute autonomously after vote + time-lock.
+Protocol changes execute autonomously after vote + timelock.
 ```
 
 | Parameter | Value |
 |---|---|
 | Voting period | 7 days |
 | Time-lock | 2 days |
-| Quorum | 10 votes minimum |
-| Passing threshold | >50% yes |
-| Execution | Autonomous (no caller needed after time-lock) |
-
-### How Voting Works
-
-1. **Propose:** Any member calls `createProposal(contentHash)` with a hash of the change description.
-2. **Vote:** Members submit a ZK-SNARK proof proving: (a) they hold a valid membership credential, (b) they have not voted on this proposal (nullifier), (c) their vote value (0/1). The proof reveals nothing about identity.
-3. **Execute:** After voting ends and the time-lock expires, anyone calls `execute(proposalId)`. The contract runs the encoded call autonomously.
-4. **Membership updates:** New members are added only via governance vote — no admin can unilaterally modify the membership root.
-
-### ZK Proof Interface
-
-```solidity
-interface IVerifier {
-    function verifyProof(
-        bytes calldata proof,
-        uint256[4] calldata publicSignals
-        // [nullifierHash, proposalId, voteValue, membershipRoot]
-    ) external view returns (bool);
-}
-```
-
-Compatible with any ZK-SNARK system (Circom + SnarkJS, Noir, Halo2). Swap the verifier contract without changing governance logic.
-
-### Foundry Tests
-
-```bash
-cd governance
-forge test -vv
-# 20 tests passing:
-# ✓ proposal creation and events
-# ✓ yes/no voting with nullifiers
-# ✓ double-vote prevention
-# ✓ voting deadline enforcement
-# ✓ invalid proof rejection
-# ✓ quorum requirement (min 10 votes)
-# ✓ majority threshold (>50%)
-# ✓ time-lock enforcement
-# ✓ single-use execution
-# ✓ membership root update via governance only
-```
+| Quorum | 10 votes |
+| Pass threshold | >50% yes |
+| Max members | 1,048,576 |
+| Proof size | 256 bytes |
 
 ---
 
 ## Infrastructure & Deployment
 
-### Production: NixOS (`infra/nixos/node.nix`)
-
-Designed for **RAM-only operation** — physical seizure of hardware yields zero user data.
-
-Key properties:
-
-| Feature | Implementation |
-|---|---|
-| Stateless root | `tmpfs` mounted at `/` — all writes lost on reboot |
-| Verified boot | `dm-verity` on the read-only image |
-| Key storage | LUKS2 encrypted USB key store only |
-| Network isolation | Firewall allows only `200::/7` (Yggdrasil space) |
-| Transport | Yggdrasil + i2pd services managed by systemd |
-| Kernel hardening | `kernel.dmesg_restrict`, `unprivileged_bpf_disabled`, etc. |
-| Reproducible builds | Nix flakes — byte-identical binary across machines |
-
-```bash
-# Deploy to a bare-metal node
-nixos-rebuild switch --target-host root@[200:your:node:addr::1] \
-  --flake .#zksn-node
-
-# Bootstrap a seed node from scratch
-chmod +x scripts/bootstrap-seed.sh
-./scripts/bootstrap-seed.sh
-```
-
-### Development: Docker Compose (`infra/docker/`)
-
-A 7-service local devnet for testing and development only. **Not for production use.**
+### Local devnet (Docker Compose)
 
 ```bash
 cd infra/docker
 docker compose up
-
-# Services:
-#   mix-node-1:3   — ZKSN mix nodes on ports 9001–9003
-#   yggdrasil-seed — Yggdrasil seed node
-#   yggdrasil-peer — Yggdrasil peer node
-#   i2pd           — I2P router (HTTP 4444, SOCKS 4447)
-#   cashu-mint     — Cashu mint (FakeWallet backend, port 3338)
+# 3 mix nodes + 2 Yggdrasil nodes + i2pd + Cashu mint
 ```
 
-### Nix Dev Shell (`flake.nix`)
+### Production (NixOS)
 
 ```bash
-nix develop
-# Enters a shell with:
-#   Rust 1.78.0 + rust-analyzer + clippy + rustfmt + llvm-tools
-#   Yggdrasil · i2pd · Foundry · just · jq · curl · git
+nixos-rebuild switch --target-host root@[200:your:node::1] --flake .#zksn-node
 ```
 
-### Justfile (30+ commands)
-
-```bash
-just build            # cargo build (debug)
-just build-release    # cargo build --release
-just test             # cargo test --workspace
-just test-all         # Rust tests + forge test
-just lint             # clippy --deny warnings
-just fmt              # rustfmt + forge fmt
-just audit            # cargo audit (vulnerability check)
-just devnet           # docker compose up (background)
-just devnet-stop      # docker compose down
-just devnet-logs      # docker compose logs -f
-just identity         # generate a fresh identity keypair
-just node             # run node with node.toml
-just sol-build        # forge build
-just sol-test         # forge test -vv
-just anvil            # local Anvil EVM node
-just docs             # cargo doc --open
-just release          # full release build
-```
+RAM-only. `tmpfs` root. `dm-verity`. No persistent writes. Hardware seizure yields zero data.
 
 ---
 
 ## Development
 
-### Crate Dependency Graph
+### Test coverage
 
-```
-zksn-crypto      ← no internal deps
-zksn-economic    ← no internal deps
-zksn-node        ← zksn-crypto, zksn-economic
-zksn-client      ← zksn-crypto, zksn-economic
-```
-
-### Workspace Layout
-
-```toml
-[workspace]
-members = ["node", "client", "crypto", "economic"]
-
-[profile.release]
-opt-level     = 3
-lto           = true
-codegen-units = 1
-panic         = "abort"
-```
-
-### Running Tests
+| Crate / Contract | Tests |
+|---|---|
+| `zksn-crypto` | 29 |
+| `zksn-node` | 51 (incl. 28 Yggdrasil enforcement tests) |
+| `zksn-economic` | 32 |
+| `zksn-client` | 68 (incl. 7 Yggdrasil enforcement tests) |
+| `ZKSNGovernance.sol` | 47 |
+| **Total** | **227** |
 
 ```bash
-# Full workspace
-cargo test --workspace
-
-# Single crate with output
-cargo test --package zksn-crypto -- --nocapture
-
-# Governance contracts
-cd governance && forge test -vv
-
-# All together
-just test-all
+cargo test --workspace        # 180 Rust tests
+cd governance && forge test   # 47 Solidity tests
 ```
 
-### Current Test Coverage
+### CI jobs
 
-| Crate / Contract | Tests | Notes |
-|---|---|---|
-| `zksn-crypto`        | 26 | identity, Sphinx onion peel roundtrips, key blinding, wire serialization, noise, zkp |
-| `zksn-node`          | 19 | mixer, cover, peers/DHT, Kademlia k-buckets, gossip, peer persistence |
-| `zksn-economic`      | 7  | Cashu token encode/decode, Monero RPC stubs |
-| `zksn-client`        | 19 | route selection, send/receive framing, Sphinx inject/peel, integration |
-| `ZKSNGovernance.sol` | 21 | Full governance lifecycle |
-| **Total**            | **92** | All passing, CI green |
-
-### Known gaps
-
-| Location | Description |
+| Job | Runs |
 |---|---|
-| `node/src/node.rs`   | Final-hop TCP delivery — node detects `next_hop == [0u8;32]` but does not yet connect to recipient's `listen_addr` |
-| `client/cli/main.rs` | Cashu `wallet balance` and `wallet topup` — token primitives exist, mint HTTP not wired |
-| `governance/`        | ZK circuit is `MockVerifier` (returns true) — Circom/Noir circuit pending |
+| Rust | fmt · build · test · clippy |
+| Security Audit | cargo audit (with auto `cargo update -p rustls-webpki`) |
+| Governance Contracts | forge build --sizes · forge test -vv |
+| Ceremony | pot28 download · 3-MPC phase 2 · forge test (manual trigger) |
 
 ---
 
 ## Threat Model
 
-### Adversary Classes
-
-| Class | Capability | ZKSN Defense | Residual Risk |
+| Adversary | Capability | Defence | Residual Risk |
 |---|---|---|---|
-| **A — Local Passive** | Observes one network link | Sphinx encryption + fixed packet size | None at link level |
-| **B — Global Passive (GPA)** | Observes ALL links simultaneously | Poisson(λ) mixing + mandatory cover traffic | Statistical correlation over months (open research problem; cover traffic raises cost dramatically) |
-| **C — Active** | Injects, drops, modifies, delays packets | Noise MAC rejects modifications; drops trigger retransmit | n-1 attack partially mitigated by batching; threshold mixing needed for full defense |
-| **D — Compromised Nodes** | Controls subset of mix nodes | Multi-hop routing; single node sees one hop only | Path correlation if adversary controls both entry and exit node |
-| **E — Legal/Compulsion** | Seizes hardware, issues subpoenas | Stateless RAM-only nodes; no corporate entity; anonymous contributors | Infrastructure operators in hostile jurisdictions remain at personal risk |
-| **F — Sybil** | Creates many fake nodes/identities | Economic stake + node reputation weighting in route selection | Sufficiently capitalized adversary can attempt governance capture |
+| Local Passive | One link | Sphinx + fixed packet size | None at link |
+| Global Passive (GPA) | All links | Poisson(λ) mixing + mandatory cover traffic | Statistical correlation (open research) |
+| Active | Injects / drops / modifies | Noise MAC · drop triggers retry | n-1 partially mitigated |
+| Compromised nodes | Subset of mix nodes | Multi-hop · single node sees one hop | Path correlation at entry+exit |
+| Legal / seizure | Hardware, subpoenas | RAM-only · no corporate entity | Operators in hostile jurisdictions |
+| Sybil | Many fake nodes | Economic stake · DHT reputation | Capitalized governance capture |
 
-### Known Limitations
-
-- **Anonymity set size:** Small networks are trivially deanonymizable regardless of cryptography. Meaningful anonymity requires hundreds of active nodes and users.
-- **Endpoint security:** ZKSN secures the network path, not the client device. Compromised endpoints defeat all network-level guarantees.
-- **Long-term traffic analysis:** Extended observation enables probabilistic deanonymization even with cover traffic. No complete solution exists in the literature.
-- **Bootstrap discovery:** Initial peer discovery is a weak point. First-contact with seed nodes is not fully anonymized.
-- **Exit nodes:** Any node providing clearnet egress is exposed by design. The closed-loop default (no exit) mitigates this.
-
-See [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md) for full adversary analysis.
+See [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md) for full analysis.
 
 ---
 
 ## Legal
 
-ZKSN has no incorporated entity, no foundation, no officers, no registered agents, and no corporate assets in any jurisdiction. This is a deliberate architectural decision.
+No incorporated entity. No foundation. No officers. No registered agents.
 
-**Key legal foundations:**
+Code is speech (*Bernstein v. DOJ*, 1999). Mix node operators are mere conduits — they transmit encrypted packets they cannot read and do not control.
 
-| Basis | Source | Relevance |
-|---|---|---|
-| Code is speech | *Bernstein v. DOJ*, 9th Cir. 1999 | Publishing this codebase is a protected act |
-| Encryption software | *Junger v. Daley*, 6th Cir. 2000 | Encryption tools are protected expression |
-| Mere conduit | DSA Art. 4 (EU) · CDA §230 (US) | Mix node operators do not see, store, or control forwarded content |
-| Jurisdiction fragmentation | Target: 30+ countries, no country >15% of nodes | No single court order affects more than a fraction of the network |
+See [docs/LEGAL.md](./docs/LEGAL.md) for full jurisdictional analysis.
 
-Mix node operators transmit encrypted packets they cannot read and do not know the contents of. This is structurally analogous to ISP common carrier status.
-
-**Operators should:**
-1. Know their local laws regarding anonymization tools
-2. Document the non-commercial, research/educational purpose of their node
-3. Consider exit traffic carefully — mix-only nodes carry significantly lower risk than exit nodes
-4. Operate in jurisdictions with strong rule of law and data protection frameworks
-
-See [docs/LEGAL.md](./docs/LEGAL.md) for full jurisdictional analysis and case law.
-
-> **This is not legal advice.** Consult qualified legal counsel for advice specific to your situation.
+> **This is not legal advice.** Consult qualified legal counsel for your situation.
 
 ---
 
 ## Roadmap
 
-| Phase | Description | Status |
-|---|---|---|
-| **0 — Cryptographic Foundations** | Ed25519, X25519, Noise_XX, Sphinx, ZKP primitives, per-hop key blinding | ✅ Complete |
-| **1 — Mesh Transport** | Yggdrasil integration, seed node tooling, peer discovery | 🟡 Kademlia DHT complete, Yggdrasil transport pending |
-| **2 — Mixnet Layer** | Poisson mixing, cover traffic, Sphinx routing, metrics, final-hop delivery | 🟡 Core complete, final-hop TCP delivery pending |
-| **3 — Internal Service Layer** | i2pd integration, .zksn TLD, DHT petnames, messaging | 🔴 Not started |
-| **4 — Economic Layer** | Cashu NUT-00, per-packet tokens, XMR settlement | 🟡 Scaffolded, mint integration pending |
-| **5 — Stateless Node OS** | NixOS live-boot, dm-verity, LUKS2, reproducible builds | 🟡 Config written, hardware testing pending |
-| **6 — DAO Governance** | ZK-SNARK voting contracts, membership credentials | 🟡 Solidity complete, ZK circuit pending |
-| **7 — Client SDK & CLI** | Rust library, Python bindings, full CLI | 🟡 Scaffolded, DHT routes pending |
-| **8 — Hardening & Audit** | External crypto audit, GPA simulation, bug bounty | 🔴 Not started |
-
-**Minimum Viable Network** = Phases 0–3 complete: anonymous identity + metadata-free messaging + internal service hosting.
-
-See [docs/ROADMAP.md](./docs/ROADMAP.md) for detailed per-phase milestones.
+| Phase | Status |
+|---|---|
+| 0 — Cryptographic foundations (Ed25519, Sphinx, Noise_XX, ZKP) | ✅ Complete |
+| 1 — Mesh transport (Yggdrasil, Kademlia DHT, `200::/7` enforcement) | ✅ Complete |
+| 2 — Mixnet (Poisson, cover traffic, Sphinx routing, PaymentEnvelope) | ✅ Complete |
+| 3 — Economic layer (Cashu NUT-00/01/03/05/07, NodeWallet, MeltManager) | ✅ Complete |
+| 4 — DAO governance (depth-20 circuit, Groth16, pot28, PoseidonHasher) | ✅ Complete |
+| 5 — Transport enforcement (Yggdrasil 200::/7 at Rust socket level) | ✅ Complete |
+| 6 — Demo + developer experience (scripts/demo.sh, full devnet) | ✅ Complete |
+| 7 — Stateless node OS (NixOS, tmpfs, dm-verity) | 🟡 Config written, hardware testing pending |
+| 8 — Internal service layer (i2pd, .zksn TLD, DHT petnames) | 🔴 Not started |
+| 9 — External security audit + bug bounty | 🔴 Not started → **v1.0.0 final gate** |
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Anonymity is respected — you are not required to contribute under your real name.
+Contributions welcome. Anonymity respected.
 
 ```bash
-# Set up an anonymous git identity
-git config user.name "anon"
+git config user.name  "anon"
 git config user.email "anon@zksn.invalid"
-
-# Generate an anonymous GPG key
-gpg --batch --gen-key <<EOF
-Key-Type: eddsa
-Key-Curve: ed25519
-Name-Real: ZKSN Contributor
-Name-Email: contributor@zksn.invalid
-Expire-Date: 1y
-%no-protection
-EOF
 
 # Push over Tor
 GIT_SSH_COMMAND="ssh -o ProxyCommand='nc -x 127.0.0.1:9050 %h %p'" git push
 ```
 
-**Before contributing cryptographic code:** Read the existing implementation in `crypto/`, understand the threat model, and open an issue for discussion before submitting changes to any `todo!()` stubs. Incorrect ECDH or Sphinx implementations would silently break all privacy guarantees.
+Before contributing cryptographic code: read the implementation, understand the threat model, open an issue before submitting changes to any core crypto path.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for full setup guide.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full guide.
 
 ---
 
 ## Security
 
-**Do not open public GitHub issues for security vulnerabilities.**
+**Do not open public GitHub issues for vulnerabilities.**
 
-Report privately via:
-1. **Preferred:** GPG-encrypted report to the security key published in `keys/security.asc`
-2. **Alternative:** GitHub Security Advisory (private, via the repository's Security tab)
+Report via GitHub Security Advisory (private) or GPG-encrypted to `keys/security.asc`.
 
-| Severity | Definition | Target Fix Time |
-|---|---|---|
-| **Critical** | Deanonymizes users, exposes IPs, compromises keys | 7 days |
-| **High** | Breaks economic layer, allows double-spend, degrades anonymity set | 30 days |
-| **Medium** | Denial of service, non-privacy information leaks | 90 days |
-| **Low** | Everything else | Best effort |
+| Severity | Target fix |
+|---|---|
+| Critical — deanonymises users, exposes IPs | 7 days |
+| High — breaks economic layer or anonymity set | 30 days |
+| Medium — DoS, non-privacy leaks | 90 days |
+| Low | Best effort |
 
 See [SECURITY.md](./SECURITY.md) for full policy.
 
@@ -919,4 +585,4 @@ See [SECURITY.md](./SECURITY.md) for full policy.
 
 [MIT](./LICENSE) — use, modify, and distribute freely.
 
-This software is provided for research and educational purposes. See [docs/LEGAL.md](./docs/LEGAL.md) for jurisdictional guidance on operating network infrastructure.
+Research and educational purposes. See [docs/LEGAL.md](./docs/LEGAL.md) for jurisdictional guidance.
