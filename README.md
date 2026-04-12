@@ -5,10 +5,10 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Status: Pre-Release](https://img.shields.io/badge/Status-Pre--Release-orange.svg)](https://github.com/Naveenob/zksn/releases/latest)
-[![CI](https://github.com/Naveenob/zksn/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Naveenob/zksn/actions/workflows/ci.yml)
+[![CI](https://github.com/Naveenob/zksn/actions/workflows/ci.yml/badge.svg)](https://github.com/Naveenob/zksn/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-blue.svg)](https://soliditylang.org/)
-[![Tests](https://img.shields.io/badge/Tests-227%20passing-brightgreen.svg)](https://github.com/Naveenob/zksn/actions)
+[![Tests](https://img.shields.io/badge/Tests-252%20passing-brightgreen.svg)](https://github.com/Naveenob/zksn/actions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 ---
@@ -59,7 +59,7 @@ The network achieves this through five orthogonal, independently verifiable mech
 | Identity Nullification | Ed25519 keypair only | No email, username, phone, or IP ever stored |
 | Metadata Erasure | Sphinx + Poisson mixing + cover traffic | Sender, receiver, timing, and content all hidden |
 | Transport Sovereignty | Yggdrasil encrypted IPv6 mesh (`200::/7`, enforced at Rust socket level) | No IANA, no ASN, no routing authority |
-| Anonymous Services | I2P (i2pd) garlic routing | Server IP never exposed to clients |
+| Anonymous Services | I2P SAM v3.1 + i2pd · `.zksn` DHT petnames | Server IP never exposed to clients; `.b32.i2p` + `name.zksn` addressing |
 | Economic Sovereignty | Cashu (Chaumian ecash) + Monero (XMR) | Unlinkable micropayments, private settlement |
 | Node Amnesia | NixOS tmpfs root, no persistent writes | Hardware seizure yields zero data |
 | Trustless Governance | ZK-SNARK on-chain voting (Groth16, BN254, pot28 VK) | Anonymous, non-coercible, fully autonomous execution |
@@ -193,6 +193,7 @@ zksn/
 │   ├── src/
 │   │   ├── config.rs                  # NodeConfig · yggdrasil_only · enforce_yggdrasil()
 │   │   ├── cover.rs                   # DROP + LOOP cover traffic generator
+│   │   ├── i2p.rs                     # SAM v3.1 client · garlic routing · .zksn petname DHT
 │   │   ├── lib.rs                     # Crate exports
 │   │   ├── main.rs                    # CLI entry point · clap · config load · tracing init
 │   │   ├── metrics.rs                 # Prometheus counters · gauges · histograms (local only)
@@ -237,7 +238,7 @@ zksn/
 | Node implementation | Rust | 1.75+ | Mix node, client, crypto primitives |
 | Async runtime | Tokio | 1.x | All async I/O |
 | Mesh transport | [Yggdrasil](https://yggdrasil-network.github.io/) | latest | Encrypted IPv6 mesh, `200::/7` enforced in Rust |
-| Anonymous services | [I2P (i2pd)](https://i2pd.website/) | latest | .b32.i2p service hosting |
+| Anonymous services | [I2P (i2pd)](https://i2pd.website/) + SAM v3.1 | latest | Garlic routing · `.b32.i2p` service hosting · `.zksn` DHT petnames |
 | Packet format | Sphinx | custom | Fixed 2048B onion packets, per-hop key blinding |
 | Node handshake | [Noise Protocol](https://noiseprotocol.org/) `XX` | snow 0.9 | Mutual auth, forward secrecy |
 | Signing | Ed25519 | ed25519-dalek 2 | Node identity |
@@ -351,6 +352,15 @@ redemption_batch_size = 100
 [keys]
 key_store_path   = "/var/lib/zksn/keys/identity.key"
 persist_identity = false   # false = ephemeral key per boot (fully stateless)
+
+# Optional: I2P internal service layer
+# Requires i2pd running on this machine (systemctl start i2pd)
+[i2p]
+enabled          = false           # set true to enable garlic routing
+sam_addr         = "127.0.0.1:7656"
+session_id       = "zksn-node"
+private_key_path = "/run/keys/zksn/i2p.key"   # stable .b32.i2p address
+petname          = "mynode"        # registers "mynode.zksn" in the DHT
 ```
 
 ### 2. Run
@@ -449,6 +459,43 @@ The `--testnet` CLI flag sets `yggdrasil_only = false` and also disables payment
 - **Per-hop key blinding:** `α_{i+1} = b_i ×_clamped α_i` — colluding nodes cannot correlate packets across hops
 - **Cover types:** `DROP` (random destination) and `LOOP` (routes back to self)
 
+### I2P Service Layer (`node/src/i2p.rs`)
+
+ZKSN mix nodes optionally expose a garlic-routed I2P destination in addition to
+their Yggdrasil address. This allows clients to reach nodes without knowing
+any Yggdrasil address — useful for bootstrapping and for clients behind
+restrictive networks.
+
+| Component | Detail |
+|---|---|
+| Protocol | I2P SAM v3.1 (`STREAM` sessions) |
+| SAM bridge | i2pd on `127.0.0.1:7656` (default) |
+| Address | `.b32.i2p` (SHA-256 of destination key, base32-encoded) |
+| Key persistence | Optional — stable address across restarts when key file is set |
+| Petnames | `.zksn` TLD registered in the Kademlia DHT |
+| Fallback | Disabled gracefully if i2pd is not running (`i2p.enabled = false`) |
+
+**`.zksn` petname resolution** — human-readable names map to `.b32.i2p` destinations
+via signed DHT records:
+
+```
+DHT key  = SHA-256("zksn:" || name.lowercase())
+Record   = { name, b32_addr, published_at, ttl, pubkey, ed25519_signature }
+```
+
+Records are signed with the node's Ed25519 identity key. Any node can verify
+a record; forged entries are rejected at the DHT layer. Records expire after 24
+hours and are re-announced every 12 hours by the registrant.
+
+```toml
+# node.toml
+[i2p]
+enabled          = true
+sam_addr         = "127.0.0.1:7656"
+petname          = "mynode"           # registers mynode.zksn
+private_key_path = "/run/keys/zksn/i2p.key"
+```
+
 ### Governance ZK (`governance/contracts/`)
 
 | Component | Detail |
@@ -530,11 +577,11 @@ RAM-only. `tmpfs` root. `dm-verity`. No persistent writes. Hardware seizure yiel
 | Crate / Contract | Tests |
 |---|---|
 | `zksn-crypto` | 29 |
-| `zksn-node` | 51 (incl. 28 Yggdrasil enforcement tests) |
+| `zksn-node` | 76 (incl. 28 Yggdrasil + 25 I2P/petname tests) |
 | `zksn-economic` | 32 |
 | `zksn-client` | 68 (incl. 7 Yggdrasil enforcement tests) |
 | `ZKSNGovernance.sol` | 47 |
-| **Total** | **227** |
+| **Total** | **252** |
 
 ```bash
 cargo test --workspace        # 180 Rust tests
@@ -591,8 +638,8 @@ See [docs/LEGAL.md](./docs/LEGAL.md) for full jurisdictional analysis.
 | 5 — Transport enforcement (Yggdrasil 200::/7 at Rust socket level) | ✅ Complete |
 | 6 — Demo + developer experience (scripts/demo.sh, full devnet) | ✅ Complete |
 | 7 — Stateless node OS (NixOS, tmpfs, dm-verity) | 🟡 Config written, hardware testing pending |
-| 8 — Internal service layer (i2pd, .zksn TLD, DHT petnames) | 🔴 Not started |
-| 9 — External security audit + bug bounty | 🔴 Not started → **v1.0.0 final gate** |
+| 8 — Internal service layer (i2pd SAM, .zksn DHT petnames, garlic routing) | ✅ Complete |
+| 9 — External security audit + bug bounty | 🟡 In progress → **v1.0.0 final gate** |
 
 ---
 
