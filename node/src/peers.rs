@@ -76,16 +76,29 @@ impl PeerInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum GossipMsg {
-    Announce { addr: String, public_key: [u8; 32] },
+    Announce {
+        addr: String,
+        public_key: [u8; 32],
+    },
     GetPeers,
-    Peers { peers: Vec<PeerInfo> },
-    FindNode { target: [u8; 32] },
+    Peers {
+        peers: Vec<PeerInfo>,
+    },
+    FindNode {
+        target: [u8; 32],
+    },
     /// Publish a signed `.zksn` petname record to the DHT.
-    PetnameAnnounce { record: crate::i2p::PetnameRecord },
+    PetnameAnnounce {
+        record: crate::i2p::PetnameRecord,
+    },
     /// Request the DHT record for `name` (`.zksn` suffix included).
-    PetnameQuery { name: String },
+    PetnameQuery {
+        name: String,
+    },
     /// Response to `PetnameQuery`.
-    PetnameRecord { record: crate::i2p::PetnameRecord },
+    PetnameRecord {
+        record: crate::i2p::PetnameRecord,
+    },
 }
 
 // ─── XOR distance helpers ────────────────────────────────────────────────────
@@ -479,10 +492,7 @@ impl PeerDiscovery {
         };
         let peers = self.table.find_closest(&target, K).await;
         for peer in &peers {
-            if let Err(e) = self
-                .send_petname_announce(&peer.addr, record.clone())
-                .await
-            {
+            if let Err(e) = self.send_petname_announce(&peer.addr, record.clone()).await {
                 debug!("PetnameAnnounce → {}: {e}", peer.addr);
             }
         }
@@ -499,11 +509,10 @@ impl PeerDiscovery {
         record: crate::i2p::PetnameRecord,
     ) -> Result<()> {
         crate::network::check_peer(addr, self.enforce_yggdrasil)?;
-        let mut stream =
-            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
-                .await
-                .map_err(|_| anyhow!("timeout"))?
-                .map_err(|e| anyhow!("connect: {e}"))?;
+        let mut stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .map_err(|_| anyhow!("timeout"))?
+            .map_err(|e| anyhow!("connect: {e}"))?;
         send_msg(&mut stream, &GossipMsg::PetnameAnnounce { record }).await?;
         Ok(())
     }
@@ -532,11 +541,10 @@ impl PeerDiscovery {
         name: &str,
     ) -> Result<crate::i2p::PetnameRecord> {
         crate::network::check_peer(addr, self.enforce_yggdrasil)?;
-        let mut stream =
-            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
-                .await
-                .map_err(|_| anyhow!("timeout"))?
-                .map_err(|e| anyhow!("connect: {e}"))?;
+        let mut stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .map_err(|_| anyhow!("timeout"))?
+            .map_err(|e| anyhow!("connect: {e}"))?;
 
         send_msg(
             &mut stream,
@@ -587,11 +595,8 @@ impl PeerDiscovery {
                 GossipMsg::PetnameQuery { ref name } => {
                     if let Some(ref store) = self.petname_store {
                         if let Some(record) = store.get(name).await {
-                            let _ = send_msg(
-                                &mut stream,
-                                &GossipMsg::PetnameRecord { record },
-                            )
-                            .await;
+                            let _ =
+                                send_msg(&mut stream, &GossipMsg::PetnameRecord { record }).await;
                             break;
                         }
                     }

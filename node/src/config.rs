@@ -1,8 +1,8 @@
+use crate::i2p::I2pConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use zksn_crypto::identity::ZksnIdentity;
-use crate::i2p::I2pConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {

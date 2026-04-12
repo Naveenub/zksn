@@ -134,8 +134,7 @@ impl MixNode {
                 let bytes: [u8; 32] = h.finalize().into();
                 let sk = ed25519_dalek::SigningKey::from_bytes(&bytes);
 
-                let mut ticker =
-                    tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
                 loop {
                     ticker.tick().await;
                     if let Some(ref name) = i2p_cfg.petname {

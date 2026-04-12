@@ -245,7 +245,10 @@ impl SamSession {
         let peer_dest = sam_readline(&mut stream).await?;
         let peer_dest = peer_dest.trim().to_string();
 
-        debug!("Accepted I2P stream from {}", &peer_dest[..16.min(peer_dest.len())]);
+        debug!(
+            "Accepted I2P stream from {}",
+            &peer_dest[..16.min(peer_dest.len())]
+        );
         Ok((stream, peer_dest))
     }
 
@@ -292,9 +295,15 @@ pub struct I2pConfig {
     pub petname: Option<String>,
 }
 
-fn bool_true() -> bool { true }
-fn default_sam_addr() -> String { SAM_DEFAULT_ADDR.to_string() }
-fn default_session_id() -> String { "zksn-node".to_string() }
+fn bool_true() -> bool {
+    true
+}
+fn default_sam_addr() -> String {
+    SAM_DEFAULT_ADDR.to_string()
+}
+fn default_session_id() -> String {
+    "zksn-node".to_string()
+}
 
 impl Default for I2pConfig {
     fn default() -> Self {
@@ -376,7 +385,11 @@ impl I2pServiceBridge {
             .await
             .context("I2P stream write")?;
         stream.flush().await?;
-        debug!("Delivered {} bytes → I2P {}", payload.len(), &resolved[..16]);
+        debug!(
+            "Delivered {} bytes → I2P {}",
+            payload.len(),
+            &resolved[..16]
+        );
         Ok(())
     }
 
@@ -603,10 +616,7 @@ impl Default for PetnameStore {
 ///
 /// Returns `(record, query_needed)`.  If `query_needed` is true the caller
 /// should issue a `GossipMsg::PetnameQuery { name }` to nearby peers.
-pub async fn resolve_petname(
-    store: &PetnameStore,
-    name: &str,
-) -> Result<PetnameRecord> {
+pub async fn resolve_petname(store: &PetnameStore, name: &str) -> Result<PetnameRecord> {
     // Fast path: local cache hit.
     if let Some(rec) = store.get(name).await {
         return Ok(rec);
@@ -630,10 +640,7 @@ fn validate_petname(name: &str) -> Result<()> {
     if label.is_empty() || label.len() > MAX_NAME_LEN {
         bail!("Petname label length out of range (1..={MAX_NAME_LEN}): {label}");
     }
-    if !label
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
+    if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         bail!("Petname label contains invalid characters (a-z, 0-9, '-' only): {label}");
     }
     Ok(())
@@ -654,7 +661,10 @@ fn validate_session_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 32 {
         bail!("SAM session_id must be 1..=32 chars");
     }
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         bail!("SAM session_id may only contain [a-zA-Z0-9_-]: {id}");
     }
     Ok(())
@@ -840,7 +850,9 @@ mod tests {
         let encoded = base32_encode_lower(&data);
         // Manually: e3=0b11100011, b0=0b10110000, c4=0b11000100 ...
         // Just verify length and charset
-        assert!(encoded.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        assert!(encoded
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
         assert_eq!(encoded.len(), 8); // ceil(40/5)
     }
 
@@ -900,8 +912,7 @@ mod tests {
     fn test_petname_record_sign_verify() {
         let sk = SigningKey::generate(&mut OsRng);
         let b32 = format!("{}.b32.i2p", "a".repeat(52));
-        let record =
-            PetnameRecord::sign("myservice.zksn".to_string(), b32, &sk).unwrap();
+        let record = PetnameRecord::sign("myservice.zksn".to_string(), b32, &sk).unwrap();
         assert!(record.verify().is_ok());
     }
 
@@ -909,8 +920,7 @@ mod tests {
     fn test_petname_record_tampered_name() {
         let sk = SigningKey::generate(&mut OsRng);
         let b32 = format!("{}.b32.i2p", "b".repeat(52));
-        let mut record =
-            PetnameRecord::sign("original.zksn".to_string(), b32, &sk).unwrap();
+        let mut record = PetnameRecord::sign("original.zksn".to_string(), b32, &sk).unwrap();
         record.name = "tampered.zksn".to_string();
         assert!(record.verify().is_err());
     }
@@ -920,8 +930,7 @@ mod tests {
         let sk = SigningKey::generate(&mut OsRng);
         let b32_orig = format!("{}.b32.i2p", "c".repeat(52));
         let b32_fake = format!("{}.b32.i2p", "d".repeat(52));
-        let mut record =
-            PetnameRecord::sign("svc.zksn".to_string(), b32_orig, &sk).unwrap();
+        let mut record = PetnameRecord::sign("svc.zksn".to_string(), b32_orig, &sk).unwrap();
         record.b32_addr = b32_fake;
         assert!(record.verify().is_err());
     }
@@ -930,8 +939,7 @@ mod tests {
     fn test_petname_record_expired() {
         let sk = SigningKey::generate(&mut OsRng);
         let b32 = format!("{}.b32.i2p", "e".repeat(52));
-        let mut record =
-            PetnameRecord::sign("old.zksn".to_string(), b32, &sk).unwrap();
+        let mut record = PetnameRecord::sign("old.zksn".to_string(), b32, &sk).unwrap();
         // Force the timestamp to be ancient
         record.published_at = 0;
         // Re-sign with the ancient timestamp so signature still matches
@@ -960,8 +968,7 @@ mod tests {
     async fn test_store_rejects_invalid_record() {
         let sk = SigningKey::generate(&mut OsRng);
         let b32 = format!("{}.b32.i2p", "g".repeat(52));
-        let mut record =
-            PetnameRecord::sign("bad-sig.zksn".to_string(), b32, &sk).unwrap();
+        let mut record = PetnameRecord::sign("bad-sig.zksn".to_string(), b32, &sk).unwrap();
         record.b32_addr = format!("{}.b32.i2p", "h".repeat(52)); // tamper
 
         let store = PetnameStore::new();
@@ -998,8 +1005,7 @@ mod tests {
     async fn test_store_evict_stale() {
         let sk = SigningKey::generate(&mut OsRng);
         let b32 = format!("{}.b32.i2p", "j".repeat(52));
-        let mut record =
-            PetnameRecord::sign("evict-me.zksn".to_string(), b32, &sk).unwrap();
+        let mut record = PetnameRecord::sign("evict-me.zksn".to_string(), b32, &sk).unwrap();
 
         // Force ancient timestamp + re-sign
         record.published_at = 0;
@@ -1011,7 +1017,11 @@ mod tests {
         // (test-only: we need to insert a stale record without going through insert())
         {
             let store = PetnameStore::new();
-            store.records.write().await.insert(record.name.clone(), record);
+            store
+                .records
+                .write()
+                .await
+                .insert(record.name.clone(), record);
             let evicted = store.evict_stale().await;
             assert_eq!(evicted, 1);
             assert!(store.get("evict-me.zksn").await.is_none());
