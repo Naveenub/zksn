@@ -218,7 +218,55 @@ in {
   };
 
   # ─────────────────────────────────────────────────────────────────────────
-  # 5. ZKSN mix node service
+  # 5a. i2pd — I2P router for garlic routing and .b32.i2p service hosting
+  # ─────────────────────────────────────────────────────────────────────────
+  services.i2pd = {
+    enable    = true;
+    address   = "127.0.0.1";   # bind i2pd's own transport to loopback;
+                                # it reaches the internet via Yggdrasil exit
+    # SAM v3 API — required by zksn_node::i2p
+    proto.sam = {
+      enable  = true;
+      address = "127.0.0.1";
+      port    = 7656;
+    };
+
+    # HTTP console (internal only)
+    proto.http = {
+      enable  = true;
+      address = "127.0.0.1";
+      port    = 7070;
+    };
+
+    # HTTP proxy (optional — remove if the node should be relay-only)
+    proto.httpProxy = {
+      enable  = true;
+      address = "127.0.0.1";
+      port    = 4444;
+    };
+
+    bandwidth = "P";       # 65 KiB/s shared class; use "X" on high-BW nodes
+
+    # Persist i2pd router identity on the LUKS2 USB so the node's .b32
+    # address is stable across reboots.
+    dataDir = "${KEY_STORE_DIR}/i2pd";
+  };
+
+  # ── i2pd tunnel definitions for auxiliary services ──────────────────────
+  # The mix node's primary garlic session is created dynamically via SAM.
+  # These tunnels expose the Cashu mint over I2P.
+  environment.etc."i2pd/tunnels.conf".text = ''
+    [zksn-mint]
+    type            = http
+    host            = 127.0.0.1
+    port            = 3338
+    keys            = ${KEY_STORE_DIR}/i2pd/zksn-mint.dat
+    inbound.length  = 3
+    outbound.length = 3
+  '';
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 5b. ZKSN mix node service
   # ─────────────────────────────────────────────────────────────────────────
 
   # Write the node config to /etc at activation time
@@ -227,8 +275,8 @@ in {
   systemd.services.zksn-node = {
     description   = "ZKSN Mix Node";
     wantedBy      = [ "multi-user.target" ];
-    after         = [ "network.target" "yggdrasil.service" "zksn-keys.mount" ];
-    requires      = [ "yggdrasil.service" ];
+    after         = [ "network.target" "yggdrasil.service" "i2pd.service" "zksn-keys.mount" ];
+    requires      = [ "yggdrasil.service" "i2pd.service" ];
 
     # Patch listen_addr with the actual Yggdrasil address at startup
     preStart = ''
@@ -256,7 +304,8 @@ in {
       ProtectHome            = true;
       NoNewPrivileges        = true;
       CapabilityBoundingSet  = "";
-      RestrictAddressFamilies = [ "AF_INET6" ];   # Yggdrasil is IPv6 only
+      # AF_INET needed for SAM TCP connection to 127.0.0.1:7656
+      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
       LockPersonality        = true;
       MemoryDenyWriteExecute = true;
       RestrictRealtime       = true;

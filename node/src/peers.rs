@@ -80,6 +80,12 @@ pub enum GossipMsg {
     GetPeers,
     Peers { peers: Vec<PeerInfo> },
     FindNode { target: [u8; 32] },
+    /// Publish a signed `.zksn` petname record to the DHT.
+    PetnameAnnounce { record: crate::i2p::PetnameRecord },
+    /// Request the DHT record for `name` (`.zksn` suffix included).
+    PetnameQuery { name: String },
+    /// Response to `PetnameQuery`.
+    PetnameRecord { record: crate::i2p::PetnameRecord },
 }
 
 // ─── XOR distance helpers ────────────────────────────────────────────────────
@@ -276,6 +282,8 @@ pub struct PeerDiscovery {
     peer_store_path: Option<String>,
     /// When true, refuse to connect to any address outside 200::/7.
     enforce_yggdrasil: bool,
+    /// Optional petname store — wired in when the I2P layer is active.
+    pub petname_store: Option<Arc<crate::i2p::PetnameStore>>,
 }
 
 impl PeerDiscovery {
@@ -308,7 +316,14 @@ impl PeerDiscovery {
             table: Arc::new(PeerTable::new(own_pubkey)),
             peer_store_path,
             enforce_yggdrasil,
+            petname_store: None,
         }
+    }
+
+    /// Attach a `PetnameStore` so gossip petname messages are forwarded to it.
+    pub fn with_petname_store(mut self, store: Arc<crate::i2p::PetnameStore>) -> Self {
+        self.petname_store = Some(store);
+        self
     }
 
     pub async fn run(self: Arc<Self>) {
@@ -448,6 +463,98 @@ impl PeerDiscovery {
         }
     }
 
+    /// Broadcast a signed petname record to the K closest peers.
+    ///
+    /// Should be called once after the I2P session is established (or when
+    /// the operator refreshes their petname registration).
+    pub async fn announce_petname(&self, record: crate::i2p::PetnameRecord) {
+        let target = {
+            // Use a SHA-256 of the name as the DHT routing key so petname
+            // queries naturally route toward publishers.
+            use sha2::{Digest, Sha256};
+            let hash = Sha256::digest(record.name.as_bytes());
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&hash);
+            key
+        };
+        let peers = self.table.find_closest(&target, K).await;
+        for peer in &peers {
+            if let Err(e) = self
+                .send_petname_announce(&peer.addr, record.clone())
+                .await
+            {
+                debug!("PetnameAnnounce → {}: {e}", peer.addr);
+            }
+        }
+        info!(
+            "PetnameAnnounce '{}' sent to {} peers",
+            record.name,
+            peers.len()
+        );
+    }
+
+    async fn send_petname_announce(
+        &self,
+        addr: &str,
+        record: crate::i2p::PetnameRecord,
+    ) -> Result<()> {
+        crate::network::check_peer(addr, self.enforce_yggdrasil)?;
+        let mut stream =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow!("timeout"))?
+                .map_err(|e| anyhow!("connect: {e}"))?;
+        send_msg(&mut stream, &GossipMsg::PetnameAnnounce { record }).await?;
+        Ok(())
+    }
+
+    /// Query the DHT for a `.zksn` petname record.
+    ///
+    /// Walks the K nearest peers until one returns a `PetnameRecord` reply.
+    pub async fn query_petname(&self, name: &str) -> Option<crate::i2p::PetnameRecord> {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(name.as_bytes());
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hash);
+
+        let peers = self.table.find_closest(&key, K).await;
+        for peer in &peers {
+            if let Ok(record) = self.query_peer_for_petname(&peer.addr, name).await {
+                return Some(record);
+            }
+        }
+        None
+    }
+
+    async fn query_peer_for_petname(
+        &self,
+        addr: &str,
+        name: &str,
+    ) -> Result<crate::i2p::PetnameRecord> {
+        crate::network::check_peer(addr, self.enforce_yggdrasil)?;
+        let mut stream =
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow!("timeout"))?
+                .map_err(|e| anyhow!("connect: {e}"))?;
+
+        send_msg(
+            &mut stream,
+            &GossipMsg::PetnameQuery {
+                name: name.to_string(),
+            },
+        )
+        .await?;
+
+        match recv_msg(&mut stream).await? {
+            GossipMsg::PetnameRecord { record } => {
+                record.verify()?;
+                Ok(record)
+            }
+            _ => Err(anyhow!("unexpected reply to PetnameQuery")),
+        }
+    }
+
     pub async fn handle_gossip(&self, mut stream: TcpStream) {
         loop {
             let msg = match recv_msg(&mut stream).await {
@@ -468,6 +575,35 @@ impl PeerDiscovery {
                     let peers = self.table.find_closest(&target, K).await;
                     let _ = send_msg(&mut stream, &GossipMsg::Peers { peers }).await;
                     break;
+                }
+                // ── Petname DHT messages ──────────────────────────────────
+                GossipMsg::PetnameAnnounce { record } => {
+                    if let Some(ref store) = self.petname_store {
+                        let name = record.name.clone();
+                        store.insert(record).await;
+                        debug!("PetnameAnnounce: stored '{name}'");
+                    }
+                }
+                GossipMsg::PetnameQuery { ref name } => {
+                    if let Some(ref store) = self.petname_store {
+                        if let Some(record) = store.get(name).await {
+                            let _ = send_msg(
+                                &mut stream,
+                                &GossipMsg::PetnameRecord { record },
+                            )
+                            .await;
+                            break;
+                        }
+                    }
+                    // We don't have it; close without reply so the querier
+                    // can try the next-closest peer.
+                    break;
+                }
+                GossipMsg::PetnameRecord { record } => {
+                    // Unsolicited — store it if we have a petname store.
+                    if let Some(ref store) = self.petname_store {
+                        store.insert(record).await;
+                    }
                 }
                 _ => break,
             }

@@ -1,6 +1,7 @@
 use crate::{
     config::NodeConfig,
     cover::CoverTrafficGenerator,
+    i2p::I2pServiceBridge,
     metrics::NodeMetrics,
     mixer::PoissonMixer,
     network,
@@ -9,6 +10,7 @@ use crate::{
     router::PacketRouter,
 };
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -51,19 +53,108 @@ impl MixNode {
             .keys
             .key_store_path
             .replace("identity.key", "peers.json");
-        let discovery = Arc::new(PeerDiscovery::new_with_enforcement(
+        let mut discovery = PeerDiscovery::new_with_enforcement(
             self.config.network.listen_addr.clone(),
             own_pubkey,
             self.config.network.bootstrap_peers.clone(),
             Some(peer_store),
             self.config.enforce_yggdrasil(),
-        ));
+        );
+
+        // ── I2P service layer ─────────────────────────────────────────────────
+        // Start the bridge before wiring the petname store into discovery, so
+        // the store exists before any gossip messages can arrive.
+        let i2p_bridge: Option<Arc<I2pServiceBridge>> = if self.config.i2p.enabled {
+            let signing_key = {
+                // Derive a deterministic Ed25519 signing key from the node
+                // identity for petname record signing.
+                let seed = self.config.identity.identity().to_secret_bytes();
+                let mut h = Sha256::new();
+                h.update(b"zksn-petname-signing-v1");
+                h.update(seed);
+                let bytes: [u8; 32] = h.finalize().into();
+                ed25519_dalek::SigningKey::from_bytes(&bytes)
+            };
+            match I2pServiceBridge::start(&self.config.i2p, &signing_key).await {
+                Ok(bridge) => {
+                    let bridge = Arc::new(bridge);
+                    // Wire petname store into discovery for gossip handling.
+                    discovery = discovery.with_petname_store(bridge.petname_store());
+                    info!("I2P bridge: {}", bridge.b32_addr());
+                    Some(bridge)
+                }
+                Err(e) => {
+                    warn!("I2P bridge unavailable (i2pd not running?): {e}");
+                    None
+                }
+            }
+        } else {
+            info!("I2P layer disabled in config");
+            None
+        };
+
+        let discovery = Arc::new(discovery);
         let peers: Arc<PeerTable> = Arc::clone(&discovery.table);
 
         let disc_clone = Arc::clone(&discovery);
         tokio::spawn(async move {
             disc_clone.run().await;
         });
+
+        // ── I2P inbound accept + petname republish ────────────────────────────
+        if let Some(ref bridge) = i2p_bridge {
+            // Spawn a task that accepts inbound I2P streams and logs/discards
+            // them (application-layer services hook in here in Phase 3+).
+            let bridge_accept = Arc::clone(bridge);
+            tokio::spawn(async move {
+                loop {
+                    match bridge_accept.accept_one().await {
+                        Ok((payload, peer)) => {
+                            debug!(
+                                "I2P inbound {} bytes from {}…",
+                                payload.len(),
+                                &peer[..16.min(peer.len())]
+                            );
+                            // TODO(phase3): dispatch to internal service router.
+                        }
+                        Err(e) => warn!("I2P accept error: {e}"),
+                    }
+                }
+            });
+
+            // Republish our petname record every 6 hours so it stays fresh.
+            let disc_petname = Arc::clone(&discovery);
+            let i2p_cfg = self.config.i2p.clone();
+            let bridge_b32 = bridge.b32_addr();
+            let identity_bytes = self.config.identity.identity().to_secret_bytes();
+            tokio::spawn(async move {
+                let mut h = Sha256::new();
+                h.update(b"zksn-petname-signing-v1");
+                h.update(identity_bytes);
+                let bytes: [u8; 32] = h.finalize().into();
+                let sk = ed25519_dalek::SigningKey::from_bytes(&bytes);
+
+                let mut ticker =
+                    tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+                loop {
+                    ticker.tick().await;
+                    if let Some(ref name) = i2p_cfg.petname {
+                        let full_name = format!("{}.zksn", name);
+                        match crate::i2p::PetnameRecord::sign(
+                            full_name.clone(),
+                            bridge_b32.clone(),
+                            &sk,
+                        ) {
+                            Ok(record) => {
+                                disc_petname.announce_petname(record).await;
+                                info!("Petname '{full_name}' republished");
+                            }
+                            Err(e) => warn!("Petname republish failed: {e}"),
+                        }
+                    }
+                }
+            });
+        }
 
         let payment_guard = Arc::new(PaymentGuard::new_with_yggdrasil(
             &self.config.economic,

@@ -26,3 +26,23 @@ redemption_batch_size = 100
 [keys]
 key_store_path   = "/var/lib/zksn/keys/identity.key"
 persist_identity = false
+
+# ── I2P internal service layer ─────────────────────────────────────────────
+# Requires a local i2pd with SAM v3 enabled:
+#   [sam]
+#   enabled = true
+#   address = 127.0.0.1
+#   port    = 7656
+[i2p]
+# Set false to run without I2P (testnet / Yggdrasil-only nodes).
+enabled    = true
+# SAM v3 TCP endpoint — must match i2pd's [sam] port.
+sam_addr   = "127.0.0.1:7656"
+# SAM session name for this node's garlic session.
+session_id = "zksn-node"
+# Persist I2P destination key so .b32.i2p address survives restarts.
+# Comment out for an ephemeral transient destination.
+keys_path  = "/var/lib/zksn/keys/i2p-identity.dat"
+# Publish this node under a human-readable .zksn petname.
+# Label only — ".zksn" is appended automatically.
+# petname = "mynode"

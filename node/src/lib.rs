@@ -1,5 +1,6 @@
 pub mod config;
 pub mod cover;
+pub mod i2p;
 pub mod metrics;
 pub mod mixer;
 pub mod network;

@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use zksn_crypto::identity::ZksnIdentity;
+use crate::i2p::I2pConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -9,6 +10,9 @@ pub struct NodeConfig {
     pub mixing: MixingConfig,
     pub economic: EconomicConfig,
     pub keys: KeyConfig,
+    /// I2P internal service layer configuration.
+    #[serde(default)]
+    pub i2p: I2pConfig,
     #[serde(default)]
     pub testnet: bool,
     #[serde(skip)]
@@ -40,6 +44,7 @@ impl Default for NodeConfig {
             mixing: MixingConfig::default(),
             economic: EconomicConfig::default(),
             keys: KeyConfig::default(),
+            i2p: I2pConfig::default(),
             testnet: false,
             identity: IdentityHolder::generate(),
         }
