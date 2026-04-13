@@ -261,7 +261,7 @@ zksn/
 ### Run the full demo (one command)
 
 ```bash
-git clone https://github.com/Naveenob/zksn.git
+git clone https://github.com/Naveenub/zksn.git
 cd zksn
 
 # Install Node.js deps (for ZK proof step)
