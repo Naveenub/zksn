@@ -1,154 +1,128 @@
-# ZKSN v1.2.0 — demo.sh, full end-to-end devnet in one command
-**⚠️ Pre-release. Not yet production-audited.**
+# ZKSN v1.0.0-rc2 — pot28 ceremony merged, audit-ready
 
-## What's in this release
-
-### feat/demo — single-command local devnet
-
-`scripts/demo.sh` runs the full ZKSN protocol end-to-end on localhost
-with no external dependencies beyond cargo and node. No Yggdrasil,
-no real Lightning, no Ethereum node required.
-
-```bash
-bash scripts/demo.sh
-```
-
-What it does:
-
-1. Builds `zksn-node` and `zksn` from source
-2. Writes configs for 3 mix nodes (testnet mode, 127.0.0.1, Poisson λ=50ms)
-3. Optionally starts a Nutshell Cashu mint via Docker (skipped gracefully if absent)
-4. Starts 3 mix nodes, waits for gossip to settle
-5. Generates Alice and Bob identities
-6. Starts Bob's receiver
-7. Sends an anonymous message Alice → Bob through the 3-hop mix
-8. Generates an anonymous governance vote:
-   - Adds voter to a depth-20 Poseidon membership tree
-   - Generates circuit witness from the tree path
-   - Produces a Groth16 proof (using the pot28 ceremony zkey)
-   - Verifies: `snarkjs groth16 verify → OK`
-   - Encodes the proof for `ZKSNGovernance.castVote()`
-9. Shows what the contract sees: nullifierHash, proposalId, voteYes,
-   membershipRoot — the voter's secret is never revealed
-
-Flags:
-```bash
-bash scripts/demo.sh --skip-vote   # mix only, no ZK proof step
-bash scripts/demo.sh --skip-mint   # no Docker mint
-```
-
-### `client/cli/main.rs` — two new flags
-
-The `zksn` CLI gains `--testnet` and `--listen`:
-
-```bash
-# Before: no way to run without Yggdrasil
-zksn send <pubkey> "hello"  # would fail: 200::/7 check
-
-# After:
-zksn send <pubkey> "hello" --testnet --node 127.0.0.1:9101
-zksn receive --testnet --listen 127.0.0.1:9201
-```
-
-`--testnet` sets `yggdrasil_only = false`.
-`--listen` overrides the default receive address.
+**⚠️ Release candidate. Awaiting external security audit before v1.0.0 final.**
 
 ---
 
-## Files changed
+## What changed in rc2
+
+### feat/ceremony-mainnet — pot28 trusted setup merged
+
+The `feat/ceremony-mainnet` branch has been merged into `main` via PR #1.
+The ZKSN governance circuit is now backed by the Hermez pot28 ceremony —
+1,000+ independent contributors from the 2021 Hermez MPC. This is the
+strongest publicly available phase 1 for the BN254 scalar field.
+
+**Phase 1 — Hermez pot28 (2^15 subset)**
 
 ```
-scripts/demo.sh          ← NEW
-client/cli/main.rs       ← --testnet and --listen flags
-RELEASE.md               ← this file
+File:   powersOfTau28_hez_final_15.ptau
+SHA256: 3ef2ecc5b75d687048cf2d59195119b42fb07c5af639c5f283d84bfa69829e7f
+Source: https://storage.googleapis.com/zkevm/ptau/powersOfTau28_hez_final_15.ptau
 ```
 
----
+**Phase 2 — 3-contributor MPC (this ceremony run, 2026-03-23)**
 
-## Running the demo
+| File | SHA256 |
+|---|---|
+| zkey_0001.zkey | 99d6d1aa1d47482b48ff00e922d9f83acd019de6b52f2f7425bbeb2b4b64536c |
+| zkey_0002.zkey | 2f70f8e89a5438c085970bb6e4d286251057b11a1b9532ae08b87812042a9542 |
+| zkey_0003.zkey | 46766f31eeb3ccb01d3554ed931e300f6571bd3719eec0bfc20684ee8ae730ca |
+| **zkey_final.zkey** | **8cd2611cdc03429e39b48c4c838653440b7109d871adcf8bc117165c9dba86f7** |
 
-### Minimal (mix only)
+**Circuit hash (binds zkey to r1cs — same across all runs):**
+```
+97b45c9a 6d976d1a 0faf3d53 d027bf9f
+143ef7df 5cf6c128 0b40e5a1 485d0a92
+e80f1b32 a0bedfb4 079589ff 68647148
+eabfa89a d5d83978 b3174e56 6ef6f0ae
+```
+
+**Test proof (snarkjs groth16 verify → OK ✅):**
+```
+secret         = 12345678901234567890
+proposalId     = 999888777666555
+voteYes        = 1
+nullifierHash  = 21605468119089894529364334093527017674406608084847384275934021833321276526684
+membershipRoot = 6331401000423026358291629782353603237933267665498208286537849807283925720420
+```
+
+**Files changed in this merge:**
+
+```
+ceremony/verification_key.json       — new VK from pot28 phase 2
+ceremony/proof.json                  — verified test proof
+ceremony/public.json                 — public signals
+governance/contracts/Groth16Verifier.sol  — updated VK constants (delta + IC)
+governance/test/ZKSNGovernance.t.sol      — updated REAL_PROOF + REAL_MEMBERSHIP_ROOT
+```
+
+**Verify yourself:**
 ```bash
-# Install Rust and Node.js, then:
-bash scripts/demo.sh --skip-vote --skip-mint
-```
+# Verify the ceremony proof against the VK
+npx snarkjs groth16 verify \
+  ceremony/verification_key.json \
+  ceremony/public.json \
+  ceremony/proof.json
+# → [INFO] snarkJS: OK!
 
-### Full (mix + ZK vote)
-```bash
-# Requires ceremony/zkey_final.zkey (already in repo after pot28 ceremony)
-bash scripts/demo.sh
-```
-
-### Full (mix + ZK vote + Cashu mint)
-```bash
-# Requires Docker
-bash scripts/demo.sh
-```
-
-Expected output:
-```
-══ Prerequisites ══
-✓ cargo: cargo 1.xx.x
-✓ node:  v22.x.x
-
-══ Build ══
-   Compiling zksn-node v0.1.0
-   Finished release [optimized] target(s)
-✓ zksn-node: 8.2M
-✓ zksn:      6.4M
-
-══ Starting Mix Nodes ══
-✓ node1  listening on 127.0.0.1:9101
-✓ node2  listening on 127.0.0.1:9102
-✓ node3  listening on 127.0.0.1:9103
-
-══ Sending Anonymous Message  (Alice → Bob) ══
-  Message: "Hello from ZKSN 14:22:07"
-  Route: Alice → node1 → node2 → node3 → Bob
-✓ Message sent through mixnet
-
-══ Anonymous Governance Vote  (ZK proof) ══
-  Adding voter to depth-20 Poseidon membership tree...
-✓ Membership tree root: 6331401000423026...
-  Generating Groth16 proof...
-✓ Proof verified ✅  (snarkjs groth16 verify → OK)
-  nullifierHash  : 21605468119089894...
-  proposalId     : 42000000000001
-  voteYes        : 1
-  membershipRoot : 6331401000423026...
-✓ Anonymous vote proof complete
-✓ The contract cannot link this vote to the voter's secret
-
-══ Demo Complete ══
-✓ 3 mix nodes running
-✓ Anonymous message sent Alice → Bob through the mix
-✓ Anonymous governance vote (Groth16 proof, pot28 VK)
+# Run all 47 Solidity tests
+cd governance && forge test -vv
+# → 47 passed; 0 failed
 ```
 
 ---
 
-## Remaining gap
+## Trust model at rc2
 
-None. Protocol is feature-complete.
-
-The next step is an external security audit before v1.0.0 final.
+| | Previous (rc1) | Now (rc2) |
+|---|---|---|
+| Phase 1 contributors | 3 (this project only) | 1,000+ (Hermez 2021) |
+| Phase 2 contributors | 3 | 3 |
+| Phase 1 soundness | Any 1 of 3 must be honest | Any 1 of 1,000+ must be honest |
+| Suitable for | Development / CI | **Mainnet — pending audit** |
 
 ---
 
-## Cumulative state at v1.2.0
+## Full cumulative state at v1.0.0-rc2
 
-**Solid ✅ — everything**
-- Ed25519, Sphinx, Noise_XX, ZKP primitives
-- Mix node — Poisson, cover traffic, Kademlia, PaymentEnvelope
-- Client — send/receive/RouteSelector, `--testnet` + `--listen` CLI flags
-- Economic — blind token full cycle, MeltManager
-- Governance — depth-20 circuit, BN254 pairing, pot28 VK (1000+ contributors)
-- PoseidonHasher + sparse depth-20 tree builder + encode_proof.js
-- Yggdrasil `200::/7` enforced at bind, accept, dial
-- `scripts/demo.sh` — full flow in one command
+### Protocol — complete ✅
 
-**No remaining protocol gaps.**
+| Layer | Status |
+|---|---|
+| Ed25519, Sphinx X25519, per-hop key blinding, Noise_XX | ✅ |
+| Poisson mixing, cover traffic (DROP + LOOP), Kademlia DHT | ✅ |
+| Cashu NUT-00/01/03/05/07, NodeWallet, MeltManager | ✅ |
+| Groth16 governance — depth-20, BN254, **pot28 VK (1000+)** | ✅ |
+| PoseidonHasher — circomlibjs bytecode, exact circuit match | ✅ |
+| Yggdrasil 200::/7 enforced at Rust bind / accept / dial | ✅ |
+| I2P SAM v3.1, .b32.i2p addressing, .zksn DHT petnames | ✅ |
+| NixOS node.nix — tmpfs root, dm-verity, LUKS2, 37-check validation | ✅ |
+| scripts/demo.sh — single-command devnet | ✅ |
+| Benchmarks — Sphinx, Cashu, mixer, peer table | ✅ |
+| docs/AUDIT_SCOPE.md + SECURITY_BRIEF.md + FINDINGS_TEMPLATE.md | ✅ |
+
+### Tests
+
+| Crate / Contract | Tests |
+|---|---|
+| `zksn-crypto` | 29 |
+| `zksn-node` | 76 |
+| `zksn-economic` | 32 |
+| `zksn-client` | 68 |
+| `ZKSNGovernance.sol` | 47 |
+| **Total** | **252** |
+
+CI: Rust · Security Audit · Governance Contracts · Ceremony — all green.
+
+### One remaining gap
+
+| Gap | Status |
+|---|---|
+| External security audit | Audit documents prepared. Firms contacted: Trail of Bits, Zellic, Least Authority. Awaiting engagement. |
+
+---
 
 ## Next
 
-External security audit → v1.0.0 final.
+Audit engagement → fixes (if any) → v1.0.0 final.
