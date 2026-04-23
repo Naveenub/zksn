@@ -67,6 +67,25 @@ The network achieves this through five orthogonal, independently verifiable mech
 
 ---
 
+## REST API
+
+Use ZKSN programmatically via **[ZKProof API](https://github.com/Naveenob/zkproof-api)** — a hosted REST interface for proof generation built on this network.
+
+```bash
+curl -X POST https://api.zkproof.dev/v1/proofs \
+  -H "Authorization: Bearer zk_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "circuit": "identity_verify",
+    "system":  "groth16",
+    "inputs":  { "age": 24, "secret": 99999, "threshold": 18, "commitment": 12345 }
+  }'
+```
+
+→ [ZKProof API repo](https://github.com/Naveenob/zkproof-api) · [Docs](https://github.com/Naveenob/zkproof-api#readme)
+
+---
+
 ## Architecture
 
 ### System Layer Diagram
