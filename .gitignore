@@ -1,13 +1,29 @@
-/target
-keys/
-*.key
-*.pem
-node.toml
-result
-.direnv
+__pycache__/
+*.pyc
+*.pyo
+**/__pycache__/
+**/__init__.py
 .env
-node_modules/
-/governance/out
-/governance/cache
-/governance/lib
-*.log
+.venv/
+venv/
+
+# Circuit artifacts — large binary files, generate locally
+keys/
+*.ptau
+*.zkey
+*.wasm
+*.r1cs
+*.sym
+
+# snarkjs temp
+*.wtns
+
+# test cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# editor
+.vscode/
+.idea/
+*.swp
