@@ -34,6 +34,7 @@ pub struct MixNode {
 impl MixNode {
     pub async fn new(config: NodeConfig) -> Result<Self> {
         network::check_bind(&config.network.listen_addr, config.enforce_yggdrasil())?;
+        network::verify_mesh_interface_live(config.enforce_yggdrasil())?;
         let listener = TcpListener::bind(&config.network.listen_addr).await?;
         info!("Listening on {}", config.network.listen_addr);
         Ok(Self { config, listener })
@@ -234,13 +235,13 @@ async fn handle_conn(
 ) -> Result<()> {
     use tokio::io::AsyncReadExt;
 
-    // Reject connections from outside the Yggdrasil address space.
+    // Reject connections from outside the mesh (Yggdrasil/CJDNS) address space.
     if payment_guard.enforce_yggdrasil() {
         if let Ok(peer_addr) = stream.peer_addr() {
-            if !network::is_yggdrasil(&peer_addr.ip()) {
+            if !network::is_mesh(&peer_addr.ip()) {
                 anyhow::bail!(
-                    "Rejected inbound connection from non-Yggdrasil address {peer_addr}. \
-                     Set network.yggdrasil_only = false in node.toml to allow non-Yggdrasil peers."
+                    "Rejected inbound connection from non-mesh address {peer_addr}. \
+                     Set network.yggdrasil_only = false in node.toml to allow non-mesh peers."
                 );
             }
         }
