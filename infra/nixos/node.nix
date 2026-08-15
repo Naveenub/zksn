@@ -67,6 +67,7 @@ let
     min_token_value       = 1
     monero_rpc_url        = "http://127.0.0.1:18082"
     redemption_batch_size = 100
+    wallet_store_path     = "/var/lib/zksn/wallet.json"
 
     [keys]
     key_store_path   = "${IDENTITY_KEY}"
@@ -275,7 +276,7 @@ in {
   systemd.services.zksn-node = {
     description   = "ZKSN Mix Node";
     wantedBy      = [ "multi-user.target" ];
-    after         = [ "network.target" "yggdrasil.service" "i2pd.service" "zksn-keys.mount" ];
+    after         = [ "network.target" "yggdrasil.service" "i2pd.service" "run-keys-zksn.mount" ];
     requires      = [ "yggdrasil.service" "i2pd.service" ];
 
     # Patch listen_addr with the actual Yggdrasil address at startup
@@ -339,8 +340,6 @@ in {
     "net.core.bpf_jit_enable"           = 0;
     # Disable unprivileged BPF
     "kernel.unprivileged_bpf_disabled"  = 1;
-    # Disable IPv4 (Yggdrasil is IPv6 only)
-    "net.ipv4.conf.all.disable_ipv4"    = 1;
     # Disable ICMP redirects
     "net.ipv6.conf.all.accept_redirects" = 0;
     # Restrict ptrace
