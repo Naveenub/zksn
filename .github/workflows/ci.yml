@@ -69,6 +69,9 @@ jobs:
       - name: Update reqwest (resolves RUSTSEC-2026-0049 via rustls-webpki)
         run: cargo update -p rustls-webpki
 
+      - name: Update pyo3 (resolves RUSTSEC-2025-0020, RUSTSEC-2026-0177)
+        run: cargo update -p pyo3 -p pyo3-async-runtimes
+
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
