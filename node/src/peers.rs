@@ -217,18 +217,21 @@ impl PeerTable {
         all
     }
 
+    /// Return `n` live peers chosen uniformly at random across the whole
+    /// table. Used for mix-hop selection — routes must not be predictable,
+    /// or an observer needs only one round of traffic analysis to link a
+    /// node to its habitual mix hops. (Previously returned the same
+    /// lowest-bucket-index, insertion-order peers every call.)
     pub async fn sample(&self, n: usize) -> Vec<PeerInfo> {
+        use rand::seq::SliceRandom;
         let buckets = self.buckets.read().await;
-        let mut out = Vec::new();
-        for bucket in buckets.iter() {
-            for peer in bucket.live_peers() {
-                out.push(peer.clone());
-                if out.len() >= n {
-                    return out;
-                }
-            }
-        }
-        out
+        let mut all: Vec<PeerInfo> = buckets
+            .iter()
+            .flat_map(|b| b.live_peers().cloned())
+            .collect();
+        all.shuffle(&mut rand::thread_rng());
+        all.truncate(n);
+        all
     }
 
     pub async fn len(&self) -> usize {
