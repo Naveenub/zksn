@@ -208,10 +208,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_balance_unreachable_rpc() {
         let rpc = MoneroRpc::new("http://127.0.0.1:1".into());
-        assert!(matches!(
-            rpc.get_balance().await,
-            Err(MoneroError::Rpc(_))
-        ));
+        assert!(matches!(rpc.get_balance().await, Err(MoneroError::Rpc(_))));
     }
 
     #[tokio::test]

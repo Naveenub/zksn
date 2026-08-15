@@ -229,7 +229,9 @@ mod tests {
 
     #[test]
     fn test_merkle_proof_verify_roundtrip() {
-        let leaves: Vec<[u8; 32]> = (0u8..5).map(|i| fr_to_bytes(Fr::from(i as u64 + 1))).collect();
+        let leaves: Vec<[u8; 32]> = (0u8..5)
+            .map(|i| fr_to_bytes(Fr::from(i as u64 + 1)))
+            .collect();
         let tree = MerkleTree::new(leaves.clone());
         let root = tree.root();
 
@@ -244,7 +246,9 @@ mod tests {
 
     #[test]
     fn test_merkle_wrong_leaf_fails() {
-        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| fr_to_bytes(Fr::from(i as u64 + 1))).collect();
+        let leaves: Vec<[u8; 32]> = (0u8..4)
+            .map(|i| fr_to_bytes(Fr::from(i as u64 + 1)))
+            .collect();
         let tree = MerkleTree::new(leaves);
         let root = tree.root();
         let (elements, indices) = tree.proof(0);

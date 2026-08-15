@@ -21,12 +21,11 @@
 //! `send`, `receive`) and is async — pyo3-async-runtimes bridges the tokio
 //! futures onto Python's asyncio event loop.
 //!
-//! NOT independently compiled/tested in this environment (no cargo, pyo3, or
-//! Python toolchain available in this sandbox) — verify with the command
-//! above before shipping. `PyBytes::new_bound` / `Python::with_gil` are the
-//! pyo3 0.23 spellings; if `cargo check --features python` pulls a pyo3
-//! patch release that renamed these (`Bound`-suffix removal happened across
-//! 0.23-0.24), rename here to match.
+//! Pinned to pyo3 >=0.29 (RUSTSEC-2025-0020, RUSTSEC-2026-0177). Uses the
+//! post-0.24 API: `PyBytes::new` (no `_bound` suffix) and `Bound<'py, T>`
+//! wrapper types throughout. NOT independently compiled/tested in this
+//! environment (no Python toolchain available in this sandbox) — verify
+//! with `cd client && maturin develop --features python` before shipping.
 
 use std::sync::Arc;
 
@@ -60,7 +59,7 @@ impl PyReceiveStream {
             match rx.lock().await.recv().await {
                 Some(msg) => {
                     let py_bytes: Py<PyBytes> =
-                        Python::with_gil(|py| PyBytes::new_bound(py, &msg).into());
+                        Python::with_gil(|py| PyBytes::new(py, &msg).into());
                     Ok(py_bytes)
                 }
                 // Channel closed — signals end of async iteration to Python.
