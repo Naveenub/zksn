@@ -2,6 +2,9 @@ pub mod receive;
 pub mod route;
 pub mod send;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 mod config;
 pub use config::ClientConfig;
 

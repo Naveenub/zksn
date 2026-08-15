@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))]
 pub struct ClientConfig {
     /// Path to Ed25519 identity key file (raw 32-byte seed).
     pub key_path: Option<String>,
@@ -39,5 +40,23 @@ impl Default for ClientConfig {
             peer_store_path: None,
             yggdrasil_only: true,
         }
+    }
+}
+
+#[cfg(feature = "python")]
+#[pyo3::pymethods]
+impl ClientConfig {
+    /// `ClientConfig()` — starts from the same defaults as Rust's `Default`.
+    /// Set fields afterward, e.g. `cfg.entry_node = "[200::1]:9001"`.
+    #[new]
+    fn py_new() -> Self {
+        Self::default()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ClientConfig(entry_node={:?}, listen_addr={:?}, hop_count={}, yggdrasil_only={})",
+            self.entry_node, self.listen_addr, self.hop_count, self.yggdrasil_only
+        )
     }
 }

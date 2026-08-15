@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "zksn-client"
+description = "Python bindings for the ZKSN client SDK"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dynamic = ["version"]
+
+[tool.maturin]
+# This Cargo.toml is one level up from pyproject.toml (client/ is the crate root).
+manifest-path = "Cargo.toml"
+features = ["python"]
+# `[lib] name = "zksn_client"` in Cargo.toml — must match the #[pymodule] fn name.
+module-name = "zksn_client"
