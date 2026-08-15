@@ -104,8 +104,9 @@ impl MixNode {
 
         // ── I2P inbound accept + petname republish ────────────────────────────
         if let Some(ref bridge) = i2p_bridge {
-            // Spawn a task that accepts inbound I2P streams and logs/discards
-            // them (application-layer services hook in here in Phase 3+).
+            // Accept inbound I2P streams and dispatch them to the internal
+            // service router (Phase 3 — replaces the old discard stub).
+            let service_router = Arc::new(crate::services::ServiceRouter::new());
             let bridge_accept = Arc::clone(bridge);
             tokio::spawn(async move {
                 loop {
@@ -116,7 +117,7 @@ impl MixNode {
                                 payload.len(),
                                 &peer[..16.min(peer.len())]
                             );
-                            // TODO(phase3): dispatch to internal service router.
+                            service_router.dispatch(&peer, &payload).await;
                         }
                         Err(e) => warn!("I2P accept error: {e}"),
                     }

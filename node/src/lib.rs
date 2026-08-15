@@ -8,3 +8,4 @@ pub mod node;
 pub mod payment;
 pub mod peers;
 pub mod router;
+pub mod services;
