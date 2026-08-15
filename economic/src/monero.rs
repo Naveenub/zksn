@@ -39,6 +39,7 @@ struct JsonRpcRequest<'a, P: Serialize> {
 }
 
 #[derive(Deserialize)]
+#[serde(bound(deserialize = "R: DeserializeOwned"))]
 struct JsonRpcResponse<R> {
     #[serde(default)]
     result: Option<R>,
