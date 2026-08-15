@@ -38,6 +38,14 @@ contract ZKSNGovernance {
     uint256 public constant QUORUM = 10;
     uint256 public constant PASS_THRESHOLD = 50;
 
+    /// @dev BN254 scalar field modulus (matches Groth16Verifier.r). proposalId
+    /// is used as a Groth16 public signal, so it must be reduced into this
+    /// field — a raw keccak256 output is a full 256-bit value and has a
+    /// non-trivial chance of landing >= r, which Groth16Verifier.checkField
+    /// unconditionally rejects, permanently bricking that proposal.
+    uint256 private constant SCALAR_FIELD_R =
+        21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
     mapping(bytes32 => Proposal) public proposals;
     mapping(bytes32 => bool) public nullifierUsed;
 
@@ -50,7 +58,9 @@ contract ZKSNGovernance {
         external
         returns (bytes32 proposalId)
     {
-        proposalId = keccak256(abi.encodePacked(contentHash, block.timestamp, msg.sender));
+        proposalId = bytes32(
+            uint256(keccak256(abi.encodePacked(contentHash, block.timestamp, msg.sender))) % SCALAR_FIELD_R
+        );
         proposals[proposalId] = Proposal({
             contentHash: contentHash,
             votingEndsAt: block.timestamp + VOTING_PERIOD,

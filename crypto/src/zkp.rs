@@ -1,7 +1,23 @@
 //! ZK credential system — Merkle membership tree and nullifiers for DAO voting.
-use sha2::{Digest, Sha256};
+//!
+//! Every hash in this module MUST match `circuits/MembershipVote.circom`
+//! exactly, or a real proof will never verify on-chain:
+//!   - leaf       = Poseidon(1)(secret)                    — no nonce, single input
+//!   - nullifier  = Poseidon(2)(secret, proposal_id)
+//!   - tree pair  = Poseidon(2)(left, right)
+//!   - tree depth = fixed 20 (circuit is `MembershipVote(20)`), left-packed,
+//!     empty slots default to the zero leaf (`0`), matching a standard
+//!     incremental Merkle tree (Tornado/Semaphore-style) rather than the
+//!     variable-depth, odd-node-duplicating tree this module used to build.
+use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
+use light_poseidon::{Poseidon, PoseidonHasher};
+use std::sync::OnceLock;
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Fixed tree depth — must match `MembershipVote(20)` in the circuit.
+pub const DEPTH: usize = 20;
 
 #[derive(Debug, Error)]
 pub enum ZkpError {
@@ -13,127 +29,171 @@ pub enum ZkpError {
     NotMember,
 }
 
+fn poseidon1(input: Fr) -> Fr {
+    Poseidon::<Fr>::new_circom(1)
+        .expect("circom Poseidon(1) parameters are static and always valid")
+        .hash(&[input])
+        .expect("single in-field input never fails to hash")
+}
+
+fn poseidon2(left: Fr, right: Fr) -> Fr {
+    Poseidon::<Fr>::new_circom(2)
+        .expect("circom Poseidon(2) parameters are static and always valid")
+        .hash(&[left, right])
+        .expect("two in-field inputs never fail to hash")
+}
+
+fn fr_from_bytes(bytes: &[u8; 32]) -> Fr {
+    // Reduces mod the BN254 scalar field, matching how proposalId is now
+    // reduced on-chain (ZKSNGovernance.sol: `% SCALAR_FIELD_R`) and how the
+    // circuit's witness generator reduces any field-typed input.
+    Fr::from_be_bytes_mod_order(bytes)
+}
+
+fn fr_to_bytes(fr: Fr) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let be = fr.into_bigint().to_bytes_be();
+    out[32 - be.len()..].copy_from_slice(&be);
+    out
+}
+
+/// zeros[0] = empty-leaf value (0). zeros[i] = Poseidon2(zeros[i-1], zeros[i-1]).
+/// Precomputed once — lets the tree stay "left-packed" (real leaves occupy a
+/// contiguous prefix) without materializing all 2^20 slots.
+fn zero_hashes() -> &'static [Fr; DEPTH + 1] {
+    static ZEROS: OnceLock<[Fr; DEPTH + 1]> = OnceLock::new();
+    ZEROS.get_or_init(|| {
+        let mut z = [Fr::from(0u64); DEPTH + 1];
+        for i in 1..=DEPTH {
+            z[i] = poseidon2(z[i - 1], z[i - 1]);
+        }
+        z
+    })
+}
+
 /// A membership credential — the secret held by a DAO member.
 #[derive(ZeroizeOnDrop)]
 pub struct MemberCredential {
     secret: [u8; 32],
-    nonce: [u8; 32],
 }
 
 impl MemberCredential {
     pub fn generate() -> Self {
         use rand::RngCore;
         let mut secret = [0u8; 32];
-        let mut nonce = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut secret);
-        rand::thread_rng().fill_bytes(&mut nonce);
-        Self { secret, nonce }
+        Self { secret }
     }
 
     pub fn from_bytes(mut bytes: [u8; 32]) -> Self {
-        let mut nonce = [0u8; 32];
-        nonce[0] = 1;
-        let s = Self {
-            secret: bytes,
-            nonce,
-        };
+        let s = Self { secret: bytes };
         bytes.zeroize();
         s
     }
 
-    /// Commitment placed in the Merkle tree: SHA-256(secret || nonce).
-    /// Note: production should use Poseidon hash for ZK-SNARK efficiency.
+    /// Leaf commitment placed in the Merkle tree: Poseidon(1)(secret).
+    /// Matches `leafHasher = Poseidon(1); leafHasher.inputs[0] <== secret;`
+    /// in MembershipVote.circom.
     pub fn commitment(&self) -> [u8; 32] {
-        let mut h = Sha256::new();
-        h.update(&self.secret);
-        h.update(&self.nonce);
-        h.finalize().into()
+        fr_to_bytes(poseidon1(fr_from_bytes(&self.secret)))
     }
 
-    /// Nullifier for a specific proposal: SHA-256(secret || proposal_id).
-    /// Unique per (member, proposal) — prevents double-voting without revealing identity.
+    /// Nullifier for a specific proposal: Poseidon(2)(secret, proposal_id).
+    /// Unique per (member, proposal) — prevents double-voting without
+    /// revealing identity. Matches `nullifierHasher` in the circuit.
     pub fn nullifier(&self, proposal_id: &[u8; 32]) -> [u8; 32] {
-        let mut h = Sha256::new();
-        h.update(&self.secret);
-        h.update(proposal_id);
-        h.finalize().into()
+        let out = poseidon2(fr_from_bytes(&self.secret), fr_from_bytes(proposal_id));
+        fr_to_bytes(out)
     }
 }
 
-/// Binary Merkle tree over member commitments.
-/// Root is stored on-chain in ZKSNGovernance.sol.
+/// Fixed depth-20 binary Merkle tree over member commitments, left-packed
+/// with a zero-value default leaf. Root is stored on-chain in
+/// ZKSNGovernance.sol and must match `MembershipVote(20)`'s public
+/// `membershipRoot` signal bit-for-bit.
 pub struct MerkleTree {
-    leaves: Vec<[u8; 32]>,
+    leaves: Vec<Fr>,
 }
 
 impl MerkleTree {
     pub fn new(leaves: Vec<[u8; 32]>) -> Self {
-        Self { leaves }
+        assert!(
+            leaves.len() <= 1 << DEPTH,
+            "membership set exceeds depth-{DEPTH} tree capacity (2^{DEPTH} leaves)"
+        );
+        Self {
+            leaves: leaves.iter().map(fr_from_bytes).collect(),
+        }
     }
 
-    /// Compute the Merkle root.
     pub fn root(&self) -> [u8; 32] {
-        if self.leaves.is_empty() {
-            return [0u8; 32];
-        }
+        let zeros = zero_hashes();
         let mut layer = self.leaves.clone();
-        while layer.len() > 1 {
-            if layer.len() % 2 == 1 {
-                layer.push(*layer.last().unwrap()); // duplicate last node
-            }
-            layer = layer
-                .chunks(2)
-                .map(|pair| hash_pair(&pair[0], &pair[1]))
-                .collect();
+        for level in 0..DEPTH {
+            layer = Self::hash_layer(&layer, zeros[level]);
         }
-        layer[0]
+        fr_to_bytes(layer.first().copied().unwrap_or(zeros[DEPTH]))
     }
 
-    /// Generate a Merkle proof for leaf at `index`.
-    pub fn proof(&self, index: usize) -> Vec<[u8; 32]> {
-        let mut proof = Vec::new();
+    /// Generate a Merkle proof for the leaf at `index`.
+    /// Returns (pathElements, pathIndices) sized exactly `DEPTH`, matching
+    /// the circuit's `pathElements[depth]` / `pathIndices[depth]` inputs.
+    pub fn proof(&self, index: usize) -> ([[u8; 32]; DEPTH], [u8; DEPTH]) {
+        assert!(index < 1 << DEPTH, "leaf index exceeds tree capacity");
+        let zeros = zero_hashes();
         let mut layer = self.leaves.clone();
         let mut idx = index;
+        let mut elements = [[0u8; 32]; DEPTH];
+        let mut indices = [0u8; DEPTH];
 
-        while layer.len() > 1 {
-            if layer.len() % 2 == 1 {
-                layer.push(*layer.last().unwrap());
-            }
-            let sibling = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
-            if sibling < layer.len() {
-                proof.push(layer[sibling]);
-            }
-            layer = layer
-                .chunks(2)
-                .map(|pair| hash_pair(&pair[0], &pair[1]))
-                .collect();
+        for level in 0..DEPTH {
+            let sibling_idx = idx ^ 1;
+            let sibling = layer.get(sibling_idx).copied().unwrap_or(zeros[level]);
+            elements[level] = fr_to_bytes(sibling);
+            indices[level] = (idx % 2) as u8;
+
+            layer = Self::hash_layer(&layer, zeros[level]);
             idx /= 2;
         }
-        proof
+        (elements, indices)
     }
 
-    /// Verify a Merkle proof.
-    pub fn verify(root: &[u8; 32], leaf: &[u8; 32], proof: &[[u8; 32]], index: usize) -> bool {
-        let mut current = *leaf;
-        let mut idx = index;
+    /// Hash one tree level: pairs consecutive leaves, padding a dangling
+    /// last leaf with `zero` (the default for this level) rather than
+    /// duplicating it — duplication would silently diverge from the
+    /// circuit's fixed-depth, zero-padded tree.
+    fn hash_layer(layer: &[Fr], zero: Fr) -> Vec<Fr> {
+        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+        let mut i = 0;
+        while i < layer.len() {
+            let left = layer[i];
+            let right = layer.get(i + 1).copied().unwrap_or(zero);
+            next.push(poseidon2(left, right));
+            i += 2;
+        }
+        next
+    }
 
-        for sibling in proof {
-            current = if idx % 2 == 0 {
-                hash_pair(&current, sibling)
+    /// Verify a Merkle proof, matching the circuit's Mux1-based ordering:
+    /// pathIndices[i] == 0 → current node is the left child, sibling is right.
+    /// pathIndices[i] == 1 → current node is the right child, sibling is left.
+    pub fn verify(
+        root: &[u8; 32],
+        leaf: &[u8; 32],
+        path_elements: &[[u8; 32]; DEPTH],
+        path_indices: &[u8; DEPTH],
+    ) -> bool {
+        let mut current = fr_from_bytes(leaf);
+        for i in 0..DEPTH {
+            let sibling = fr_from_bytes(&path_elements[i]);
+            current = if path_indices[i] == 0 {
+                poseidon2(current, sibling)
             } else {
-                hash_pair(sibling, &current)
+                poseidon2(sibling, current)
             };
-            idx /= 2;
         }
-        &current == root
+        fr_to_bytes(current) == *root
     }
-}
-
-fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(left);
-    h.update(right);
-    h.finalize().into()
 }
 
 #[cfg(test)]
@@ -162,22 +222,21 @@ mod tests {
     }
 
     #[test]
-    fn test_merkle_root_single_leaf() {
-        let leaf = [1u8; 32];
-        let tree = MerkleTree::new(vec![leaf]);
-        assert_eq!(tree.root(), leaf);
+    fn test_empty_tree_root_is_top_zero_hash() {
+        let tree = MerkleTree::new(vec![]);
+        assert_eq!(tree.root(), fr_to_bytes(zero_hashes()[DEPTH]));
     }
 
     #[test]
-    fn test_merkle_proof_verify() {
-        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| [i; 32]).collect();
+    fn test_merkle_proof_verify_roundtrip() {
+        let leaves: Vec<[u8; 32]> = (0u8..5).map(|i| fr_to_bytes(Fr::from(i as u64 + 1))).collect();
         let tree = MerkleTree::new(leaves.clone());
         let root = tree.root();
 
         for i in 0..leaves.len() {
-            let proof = tree.proof(i);
+            let (elements, indices) = tree.proof(i);
             assert!(
-                MerkleTree::verify(&root, &leaves[i], &proof, i),
+                MerkleTree::verify(&root, &leaves[i], &elements, &indices),
                 "Proof for leaf {i} must verify"
             );
         }
@@ -185,11 +244,26 @@ mod tests {
 
     #[test]
     fn test_merkle_wrong_leaf_fails() {
-        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| [i; 32]).collect();
+        let leaves: Vec<[u8; 32]> = (0u8..4).map(|i| fr_to_bytes(Fr::from(i as u64 + 1))).collect();
         let tree = MerkleTree::new(leaves);
         let root = tree.root();
-        let proof = tree.proof(0);
-        let wrong = [99u8; 32];
-        assert!(!MerkleTree::verify(&root, &wrong, &proof, 0));
+        let (elements, indices) = tree.proof(0);
+        let wrong = fr_to_bytes(Fr::from(999u64));
+        assert!(!MerkleTree::verify(&root, &wrong, &elements, &indices));
+    }
+
+    #[test]
+    fn test_single_leaf_matches_circuit_shape() {
+        // A single-leaf tree's root must equal DEPTH-many Poseidon2 pairings
+        // of that leaf against the precomputed zero hashes — this is exactly
+        // what MerkleProof(20) computes in-circuit when all pathIndices == 0.
+        let leaf = fr_from_bytes(&fr_to_bytes(Fr::from(42u64)));
+        let tree = MerkleTree::new(vec![fr_to_bytes(leaf)]);
+        let zeros = zero_hashes();
+        let mut expected = leaf;
+        for level in 0..DEPTH {
+            expected = poseidon2(expected, zeros[level]);
+        }
+        assert_eq!(tree.root(), fr_to_bytes(expected));
     }
 }

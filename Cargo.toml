@@ -38,6 +38,9 @@ tracing-subscriber = { version = "0.3",  features = ["env-filter"] }
 thiserror          = "1"
 anyhow             = "1"
 prometheus         = { version = "0.13", default-features = false }
+ark-bn254          = "0.4"
+ark-ff             = "0.4"
+light-poseidon     = "0.2"
 
 [profile.release]
 opt-level     = 3
