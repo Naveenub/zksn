@@ -211,13 +211,18 @@ bother provisioning hardware yet — fix it in the VM first.
 After the node boots and `zksn-node.service` is active (wait ~30 seconds):
 
 ```bash
-# From your local machine
-bash infra/nixos/hardware-test.sh [200:your:node:addr::1]
+# From your local machine — pass a second argument to also write a
+# machine-readable JSON attestation record (see infra/nixos/ATTESTATION.md)
+bash infra/nixos/hardware-test.sh [200:your:node:addr::1] infra/nixos/attestation-$(date +%Y%m%d).json
 
 # Or copy to the node and run locally
 scp infra/nixos/hardware-test.sh root@[200:your:node::1]:/tmp/
-ssh root@[200:your:node::1] bash /tmp/hardware-test.sh
+ssh root@[200:your:node::1] bash /tmp/hardware-test.sh "" /tmp/attestation.json
 ```
+
+After a clean run, fill in `infra/nixos/ATTESTATION.md` with the output above,
+the four manual checks in Step 7, and commit the JSON record — this is the
+checked-in proof that phase 5 has actually been validated on real hardware.
 
 Expected output (all 30 automated checks passing):
 

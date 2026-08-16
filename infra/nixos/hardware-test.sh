@@ -8,10 +8,14 @@
 # or FAIL line. The suite exits 0 only if all checks pass.
 #
 # Usage (from your local machine):
-#   bash infra/nixos/hardware-test.sh [200:yggdrasil:addr::1]
+#   bash infra/nixos/hardware-test.sh [200:yggdrasil:addr::1] [attestation.json]
 #
 # Usage (directly on the node over SSH):
-#   bash /etc/zksn/hardware-test.sh
+#   bash /etc/zksn/hardware-test.sh "" attestation.json
+#
+# The optional second argument writes a machine-readable JSON record of the
+# run (host, kernel, timestamp, per-check results) — check this file into
+# infra/nixos/ATTESTATION.md as proof of a completed bare-metal run.
 #
 # Prerequisites:
 #   - Node deployed with infra/nixos/node.nix
@@ -45,6 +49,7 @@ set -uo pipefail
 # ── Remote or local mode ──────────────────────────────────────────────────────
 
 REMOTE_HOST="${1:-}"
+JSON_OUT="${2:-}"
 SSH_CMD=""
 
 if [[ -n "$REMOTE_HOST" ]]; then
@@ -73,10 +78,19 @@ run() {
 PASS=0
 FAIL=0
 SKIP=0
+RESULTS=()
 
-pass() { echo "  PASS  $1"; ((PASS++)); }
-fail() { echo "  FAIL  $1"; ((FAIL++)); }
-skip() { echo "  SKIP  $1 ($2)"; ((SKIP++)); }
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  printf '"%s"' "$s"
+}
+
+pass() { echo "  PASS  $1"; ((PASS++)); RESULTS+=("{\"status\":\"PASS\",\"check\":$(json_escape "$1")}"); }
+fail() { echo "  FAIL  $1"; ((FAIL++)); RESULTS+=("{\"status\":\"FAIL\",\"check\":$(json_escape "$1")}"); }
+skip() { echo "  SKIP  $1 ($2)"; ((SKIP++)); RESULTS+=("{\"status\":\"SKIP\",\"check\":$(json_escape "$1"),\"reason\":$(json_escape "$2")}"); }
 
 check() {
   local label="$1"
@@ -354,6 +368,28 @@ TOTAL=$((PASS + FAIL + SKIP))
 echo "  Results: $PASS passed, $FAIL failed, $SKIP skipped ($TOTAL total)"
 echo "════════════════════════════════════════════════════════"
 echo ""
+
+if [[ -n "$JSON_OUT" ]]; then
+  HOST_LABEL="${REMOTE_HOST:-local}"
+  NODE_HOSTNAME=$(run "hostname" 2>/dev/null || echo "unknown")
+  NODE_KERNEL=$(run "uname -a" 2>/dev/null || echo "unknown")
+  TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  CHECKS_JSON=$(IFS=,; echo "${RESULTS[*]}")
+  {
+    printf '{\n'
+    printf '  "suite": "zksn-nixos-hardware-validation",\n'
+    printf '  "timestamp": %s,\n' "$(json_escape "$TIMESTAMP")"
+    printf '  "target": %s,\n' "$(json_escape "$HOST_LABEL")"
+    printf '  "hostname": %s,\n' "$(json_escape "$NODE_HOSTNAME")"
+    printf '  "kernel": %s,\n' "$(json_escape "$NODE_KERNEL")"
+    printf '  "summary": {"pass": %d, "fail": %d, "skip": %d, "total": %d},\n' "$PASS" "$FAIL" "$SKIP" "$TOTAL"
+    printf '  "checks": [%s]\n' "$CHECKS_JSON"
+    printf '}\n'
+  } > "$JSON_OUT"
+  echo "  Attestation record written: $JSON_OUT"
+  echo "  (check this in under infra/nixos/ATTESTATION.md — see template)"
+  echo ""
+fi
 
 if [[ $FAIL -gt 0 ]]; then
   echo "  ✗ Hardware validation FAILED — see FAIL lines above"
