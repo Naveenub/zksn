@@ -187,6 +187,25 @@ nixos-install \
 
 ---
 
+## Step 5b — Pre-deploy VM smoke test (no hardware required)
+
+Before touching physical gear, sanity-check the config in a QEMU VM. This
+catches sysctl typos, systemd hardening regressions, and service startup
+failures early — it does **not** exercise dm-verity, LUKS2, or actual
+power-loss behavior, since those need real block devices (see the table
+above; run `hardware-test.sh` on real hardware for those).
+
+```bash
+nix-build infra/nixos/vm-test.nix
+# or, with flakes:
+nix build -f infra/nixos/vm-test.nix
+```
+
+A clean run exits 0 with all subtests passing. Any failure here means don't
+bother provisioning hardware yet — fix it in the VM first.
+
+---
+
 ## Step 6 — Run the hardware validation suite
 
 After the node boots and `zksn-node.service` is active (wait ~30 seconds):

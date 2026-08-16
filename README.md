@@ -656,7 +656,7 @@ See [docs/LEGAL.md](./docs/LEGAL.md) for full jurisdictional analysis.
 | 4 — DAO governance (depth-20 circuit, Groth16, pot28, PoseidonHasher) | ✅ Complete |
 | 5 — Transport enforcement (Yggdrasil 200::/7 at Rust socket level) | ✅ Complete |
 | 6 — Demo + developer experience (scripts/demo.sh, full devnet) | ✅ Complete |
-| 7 — Stateless node OS (NixOS, tmpfs, dm-verity) | 🟡 Config written, hardware testing pending |
+| 7 — Stateless node OS (NixOS, tmpfs, dm-verity) | 🟡 Config written, VM smoke test added, physical hardware validation pending |
 | 8 — Internal service layer (i2pd SAM, .zksn DHT petnames, garlic routing) | ✅ Complete |
 | 9 — External security audit + bug bounty | 🟡 In progress → **v1.0.0 final gate** |
 
