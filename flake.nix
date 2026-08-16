@@ -8,7 +8,7 @@
   };
 
   outputs = { self, nixpkgs, rust-overlay, flake-utils, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+    (flake-utils.lib.eachDefaultSystem (system:
       let
         overlays     = [ (import rust-overlay) ];
         pkgs         = import nixpkgs { inherit system overlays; };
@@ -34,5 +34,12 @@
             echo "  just test-all  # run all tests"
           '';
         };
-      });
+      }))
+    // {
+      # Bare-metal mix node — not per-system (nixosSystem pins its own).
+      nixosConfigurations.zksn-node = nixpkgs.lib.nixosSystem {
+        system  = "x86_64-linux";
+        modules = [ ./infra/nixos/node.nix ];
+      };
+    };
 }

@@ -90,8 +90,12 @@ in {
     };
 
     kernelParams = [
-      # Enable dm-verity for the nix store partition (populated at image build)
-      "dm-mod.create=verity"
+      # dm-verity root hash is NOT declared here — see initrd.postDeviceCommands
+      # below for why (embedding it in kernelParams would make the verity-hashed
+      # partition self-referential). The hash is appended to the boot entry's
+      # `options` line post-install by loader.systemd-boot.extraInstallCommands,
+      # reading from /boot/zksn-verity-hash.txt (lives on the unprotected ESP,
+      # outside the verity-hashed data — see README.md Step 3).
       # Disable kernel module loading after boot (prevents LKM rootkits)
       "module.sig_enforce=1"
       # Kernel hardening
@@ -102,12 +106,37 @@ in {
 
     kernelModules = [ "dm_verity" "overlay" ];
 
-    # initrd: unlock LUKS2 key device before mounting tmpfs root
+    loader.systemd-boot.extraInstallCommands = ''
+      # Append the dm-verity root hash to the just-written boot entry.
+      # Runs at bootloader-install time (target-local), so it always applies
+      # to the newest generation's entry — every `nixos-rebuild switch`
+      # regenerates the base entry from kernelParams, then this re-appends
+      # the hash, so it is never silently lost on redeploy.
+      LATEST_ENTRY=$(ls -t /boot/loader/entries/*.conf 2>/dev/null | head -1)
+      if [ -z "$LATEST_ENTRY" ]; then
+        echo "WARNING: no boot entry found — cannot attach verity hash" >&2
+      elif [ ! -f /boot/zksn-verity-hash.txt ]; then
+        echo "WARNING: /boot/zksn-verity-hash.txt missing — node will not boot" >&2
+        echo "  Run 'veritysetup format' (README.md Step 3) and write the root" >&2
+        echo "  hash to /boot/zksn-verity-hash.txt, then re-run this install." >&2
+      else
+        ROOT_HASH=$(tr -d '[:space:]' < /boot/zksn-verity-hash.txt)
+        sed -i "s|^options .*|& zksn.verityhash=$ROOT_HASH|" "$LATEST_ENTRY"
+      fi
+    '';
+
+    # initrd: unlock LUKS2 key device, then open the dm-verity device,
+    # before mounting tmpfs root
     initrd = {
       availableKernelModules = [
         "xhci_pci" "ahci" "nvme" "usb_storage" "sd_mod"
         "dm_crypt" "dm_verity"
       ];
+
+      # veritysetup isn't in the default initrd tool set — pull it in.
+      extraUtilsCommands = ''
+        copy_bin_and_libs ${pkgs.cryptsetup}/bin/veritysetup
+      '';
 
       # LUKS2 encrypted USB key store
       # Replace /dev/disk/by-id/... with the actual USB device identifier.
@@ -116,6 +145,27 @@ in {
         device     = "/dev/disk/by-label/ZKSN-KEYS";
         bypassWorkqueues = true;       # performance on fast USB 3
       };
+
+      # Open the dm-verity device before the normal fileSystems mount stage
+      # looks for /dev/mapper/vroot. The root hash is read from the kernel
+      # cmdline (written by extraInstallCommands above) rather than baked
+      # in here, so this script's content — and therefore its contribution
+      # to the verity-hashed partition — never changes between builds.
+      postDeviceCommands = ''
+        ROOT_HASH=""
+        for arg in $(cat /proc/cmdline); do
+          case "$arg" in
+            zksn.verityhash=*) ROOT_HASH="''${arg#zksn.verityhash=}" ;;
+          esac
+        done
+        if [ -z "$ROOT_HASH" ]; then
+          echo "FATAL: no zksn.verityhash= on kernel cmdline — refusing to open /nix" >&2
+        else
+          veritysetup open \
+            /dev/disk/by-label/ZKSN-NIX-DATA vroot \
+            /dev/disk/by-label/ZKSN-NIX-HASH "$ROOT_HASH"
+        fi
+      '';
     };
   };
 
@@ -131,9 +181,9 @@ in {
       options = [ "mode=0755" "size=4G" ];
     };
 
-    # Nix store is read-only. dm-verity hash verified at mount.
+    # Nix store data. dm-verity-mapped device — see boot.initrd.postDeviceCommands.
     "/nix" = {
-      device  = "/dev/disk/by-label/ZKSN-NIX";
+      device  = "/dev/mapper/vroot";
       fsType  = "ext4";
       options = [ "ro" "noatime" ];
     };
@@ -149,7 +199,10 @@ in {
     "${KEY_STORE_DIR}" = {
       device  = "/dev/mapper/zksn-keys";
       fsType  = "ext4";
-      options = [ "ro" "noatime" "nodev" "nosuid" "noexec" ];
+      # rw at the mount level: i2pd needs to persist its router identity here.
+      # zksn-node's own view of this path is still enforced read-only via
+      # ReadOnlyPaths in its systemd unit below.
+      options = [ "noatime" "nodev" "nosuid" "noexec" ];
       neededForBoot = false;
     };
   };
@@ -344,6 +397,9 @@ in {
     "net.ipv6.conf.all.accept_redirects" = 0;
     # Restrict ptrace
     "kernel.yama.ptrace_scope"           = 2;
+    # Disable IPv4 — Yggdrasil-only node, no clearnet routing
+    "net.ipv4.conf.all.disable_ipv4"     = 1;
+    "net.ipv4.conf.default.disable_ipv4" = 1;
   };
 
   # Disable unnecessary kernel modules

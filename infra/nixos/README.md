@@ -35,7 +35,7 @@ nix develop   # enter the dev shell with all tools
 
 ## Step 1 — Partition the target disk
 
-Boot the NixOS installer. Partition the target disk with three partitions:
+Boot the NixOS installer. Partition the target disk with four partitions:
 
 ```bash
 # Identify your disk (usually /dev/sda or /dev/nvme0n1)
@@ -43,16 +43,23 @@ lsblk
 
 # Partition layout:
 #   sda1  512M   EFI       label: ZKSN-BOOT
-#   sda2  rest   ext4      label: ZKSN-NIX   (will be made read-only + dm-verity)
+#   sda2  rest-1G ext4     label: ZKSN-NIX-DATA  (nix store, dm-verity data device)
+#   sda3  1G     (none)    label: ZKSN-NIX-HASH  (dm-verity hash tree — raw device, no fs)
 
 parted /dev/sda -- mklabel gpt
-parted /dev/sda -- mkpart ESP  fat32 1MB 512MB
-parted /dev/sda -- mkpart Nix  ext4  512MB 100%
+parted /dev/sda -- mkpart ESP   fat32 1MB    512MB
+parted /dev/sda -- mkpart Nix   ext4  512MB  -1GB
+parted /dev/sda -- mkpart Hash  ""    -1GB   100%
 parted /dev/sda -- set 1 esp on
 
-mkfs.fat  -F 32 -n ZKSN-BOOT /dev/sda1
-mkfs.ext4       -L ZKSN-NIX  /dev/sda2
+mkfs.fat  -F 32 -n ZKSN-BOOT      /dev/sda1
+mkfs.ext4       -L ZKSN-NIX-DATA  /dev/sda2
+# sda3 is left unformatted — veritysetup writes its own hash-tree superblock.
 ```
+
+The hash tree lives on its own raw partition, not a loopback file: `dm-verity`
+must open it as a block device during initrd, before any filesystem-backed
+storage is available.
 
 ---
 
@@ -97,7 +104,7 @@ cryptsetup luksClose zksn-keys
 
 ---
 
-## Step 3 — Build the dm-verity nix store image
+## Step 3 — Build and install, then seal it with dm-verity
 
 **This step runs on your build machine, not the target node.**
 
@@ -108,23 +115,38 @@ cd /path/to/zksn
 nix build .#nixosConfigurations.zksn-node.config.system.build.toplevel
 
 # Install to the target disk (target must be mounted at /mnt)
-# Replace /dev/sda2 with your actual Nix partition
 mount /dev/sda2 /mnt/nix
 NIXOS_INSTALL_BOOTLOADER=1 nixos-install \
   --system ./result \
   --root /mnt
 
-# Generate dm-verity hash tree for the nix partition
-# Store the root hash — you will need it in the boot parameters
-veritysetup format /dev/sda2 /dev/sda2-verity.img \
-  | tee /tmp/verity-info.txt
+# Generate the dm-verity hash tree from the now-installed nix store.
+# Data device = the partition just populated by nixos-install.
+# Hash device = the raw sda3 partition — do NOT put the hash tree in a
+# loopback file; initrd can only open real block devices pre-root.
+veritysetup format /dev/sda2 /dev/sda3 | tee /tmp/verity-info.txt
 ROOT_HASH=$(grep "Root hash:" /tmp/verity-info.txt | awk '{print $3}')
 echo "dm-verity root hash: $ROOT_HASH"
 
-# Add the root hash to the kernel command line in the boot loader
-# Edit /mnt/boot/loader/entries/*.conf and add:
-# options ... dm-mod.create="vroot,,,ro,0 $(blockdev --getsz /dev/sda2) verity 1 /dev/sda2 /dev/sda2 4096 4096 $(blockdev --getsz /dev/sda2)/8 0 sha256 $ROOT_HASH ..."
+# Write the hash to the unprotected ESP — NOT into the nix store — so it
+# never becomes part of the data being hashed (self-reference is
+# unsolvable: any value baked into the store changes the store, which
+# changes the hash). node.nix's postDeviceCommands reads it from the
+# kernel cmdline at boot; extraInstallCommands re-attaches it to every
+# new generation's boot entry automatically, so this write is one-time.
+echo "$ROOT_HASH" > /mnt/boot/zksn-verity-hash.txt
+
+# Re-run the bootloader install so extraInstallCommands picks up the
+# hash file just written and appends zksn.verityhash= to the entry.
+nixos-enter --root /mnt -- /run/current-system/bin/switch-to-configuration boot
 ```
+
+On every subsequent `nixos-rebuild switch --target-host ...`, the same
+`extraInstallCommands` hook re-reads `/boot/zksn-verity-hash.txt` (which
+persists on the ESP across redeploys) and re-attaches it to the new
+generation's entry automatically — no manual edit needed after the first
+install, unless the store itself gets a full re-image (new data partition
+contents), which requires repeating the `veritysetup format` step above.
 
 ---
 

@@ -36,7 +36,7 @@
 #   15. Module blacklist — bluetooth, firewire, thunderbolt not loaded
 #   16. zksn-node.service active — systemd unit running
 #   17. Service restart on crash — Restart=on-failure in unit file
-#   18. Key store read-only — write attempt to /run/keys/zksn fails
+#   18. Key store write protection — enforced on zksn-node via systemd ReadOnlyPaths
 #   19. MemoryDenyWriteExecute — W+X pages blocked in service
 #   20. NoNewPrivileges — privilege escalation blocked
 
@@ -192,13 +192,13 @@ check \
   "identity.key is readable (32 bytes)" \
   "test \$(wc -c < /run/keys/zksn/identity.key 2>/dev/null || echo 0) -ge 32"
 
-check \
-  "key store mounted read-only" \
-  "mount | grep -q '/run/keys/zksn.*ro'"
-
-check \
-  "write to key store is refused" \
-  "! touch /run/keys/zksn/test_write 2>/dev/null"
+# Key store mount is rw (i2pd needs to write its persistent state there).
+# Protection against zksn-node writing/tampering with identity.key is
+# enforced per-service via ReadOnlyPaths, not at the filesystem level.
+check_output \
+  "zksn-node.service ReadOnlyPaths includes key store" \
+  "systemctl show zksn-node --property=ReadOnlyPaths" \
+  "/run/keys/zksn"
 
 check \
   "LUKS2 device mapper present" \
