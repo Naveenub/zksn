@@ -124,7 +124,10 @@ impl PresenceService {
     }
 
     async fn receive(&self, from: &str) {
-        self.last_seen.write().await.insert(from.to_string(), now_secs());
+        self.last_seen
+            .write()
+            .await
+            .insert(from.to_string(), now_secs());
     }
 
     /// Seconds since `dest` last pinged, or `None` if never seen.
@@ -252,7 +255,11 @@ mod tests {
         let router = ServiceRouter::new();
         let raw = envelope(ServiceTag::Presence, b"");
         router.dispatch("peer.b32.i2p", &raw).await;
-        assert!(router.presence.last_seen_secs_ago("peer.b32.i2p").await.is_some());
+        assert!(router
+            .presence
+            .last_seen_secs_ago("peer.b32.i2p")
+            .await
+            .is_some());
     }
 
     #[tokio::test]
