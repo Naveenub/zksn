@@ -29,12 +29,14 @@ const MAX_INBOX: usize = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceTag {
     Messaging,
+    Presence,
 }
 
 impl ServiceTag {
     fn from_byte(b: u8) -> Option<Self> {
         match b {
             0x01 => Some(Self::Messaging),
+            0x02 => Some(Self::Presence),
             _ => None,
         }
     }
@@ -42,6 +44,7 @@ impl ServiceTag {
     pub fn to_byte(self) -> u8 {
         match self {
             Self::Messaging => 0x01,
+            Self::Presence => 0x02,
         }
     }
 }
@@ -105,18 +108,55 @@ impl Default for MessagingService {
     }
 }
 
+// ─── presence service ────────────────────────────────────────────────────────
+
+/// Tracks last-seen timestamps for peers that ping this node. No outbound
+/// pinging here — that's the caller's responsibility via `envelope`.
+pub struct PresenceService {
+    last_seen: RwLock<std::collections::HashMap<String, u64>>,
+}
+
+impl PresenceService {
+    pub fn new() -> Self {
+        Self {
+            last_seen: RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    async fn receive(&self, from: &str) {
+        self.last_seen.write().await.insert(from.to_string(), now_secs());
+    }
+
+    /// Seconds since `dest` last pinged, or `None` if never seen.
+    pub async fn last_seen_secs_ago(&self, dest: &str) -> Option<u64> {
+        self.last_seen
+            .read()
+            .await
+            .get(dest)
+            .map(|t| now_secs().saturating_sub(*t))
+    }
+}
+
+impl Default for PresenceService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ─── router ──────────────────────────────────────────────────────────────────
 
 /// Dispatches inbound I2P payloads to the service addressed by their leading
 /// tag byte. Replaces the Phase-3 stub that discarded every inbound stream.
 pub struct ServiceRouter {
     pub messaging: Arc<MessagingService>,
+    pub presence: Arc<PresenceService>,
 }
 
 impl ServiceRouter {
     pub fn new() -> Self {
         Self {
             messaging: Arc::new(MessagingService::new()),
+            presence: Arc::new(PresenceService::new()),
         }
     }
 
@@ -132,6 +172,7 @@ impl ServiceRouter {
         };
         match ServiceTag::from_byte(tag_byte) {
             Some(ServiceTag::Messaging) => self.messaging.receive(from, body).await,
+            Some(ServiceTag::Presence) => self.presence.receive(from).await,
             None => warn!(
                 "Service dispatch: unknown service tag 0x{tag_byte:02x} from {}",
                 short(from)
@@ -204,5 +245,19 @@ mod tests {
         svc.receive("peer", b"b").await;
         assert_eq!(svc.drain().await.len(), 2);
         assert_eq!(svc.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_routes_presence() {
+        let router = ServiceRouter::new();
+        let raw = envelope(ServiceTag::Presence, b"");
+        router.dispatch("peer.b32.i2p", &raw).await;
+        assert!(router.presence.last_seen_secs_ago("peer.b32.i2p").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_presence_unknown_peer_is_none() {
+        let svc = PresenceService::new();
+        assert!(svc.last_seen_secs_ago("nobody").await.is_none());
     }
 }
